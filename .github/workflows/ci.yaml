@@ -1,0 +1,26 @@
+---
+name: CI
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install required dependencies
+        run: sudo apt install libbtrfs-dev
+
+      - name: set up go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: build
+        run: go build -v ./...
+        working-directory: ./bin
