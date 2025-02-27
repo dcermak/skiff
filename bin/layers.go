@@ -4,24 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/containers/image/v5/image"
-	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
 	"github.com/urfave/cli/v3"
+
+	skiff "github.com/dcermak/skiff/pkg"
 )
 
-func ShowLayerUsage(url string, ctx context.Context, sysCtx *types.SystemContext) (string, error) {
-	ref, err := alltransports.ParseImageName(url)
-	if err != nil {
-		return "", err
-	}
-	imgSrc, err := ref.NewImageSource(ctx, sysCtx)
-	if err != nil {
-		return "", err
-	}
-	defer imgSrc.Close()
-
-	img, err := image.FromUnparsedImage(ctx, sysCtx, image.UnparsedInstance(imgSrc, nil))
+func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string) (string, error) {
+	img, err := skiff.ImageFromURI(ctx, sysCtx, uri)
 	if err != nil {
 		return "", err
 	}
@@ -33,7 +23,7 @@ func ShowLayerUsage(url string, ctx context.Context, sysCtx *types.SystemContext
 
 	res := ""
 	for _, l := range inspect.LayersData {
-		res += fmt.Sprintf("%s: %d\n", l.Digest.Hex(), l.Size)
+		res += fmt.Sprintf("%s %d\n", l.Digest, l.Size)
 	}
 
 	return res, nil
@@ -47,9 +37,9 @@ var LayerUsage cli.Command = cli.Command{
 	Arguments: []cli.Argument{&cli.StringArg{Name: "url", Min: 1, Max: 1, Values: &url, UsageText: ""}},
 	Action: func(ctx context.Context, c *cli.Command) error {
 		sysCtx := types.SystemContext{}
-		out, err := ShowLayerUsage(url[0], ctx, &sysCtx)
+		out, err := ShowLayerUsage(ctx, &sysCtx, url[0])
 		if err == nil {
-			fmt.Println(out)
+			fmt.Print(out)
 		}
 		return err
 	},
