@@ -22,5 +22,5 @@ jobs:
           go-version-file: go.mod
 
       - name: build
-        run: go build -v ./...
-        working-directory: ./bin
+        run: make binaries
+        working-directory: .
