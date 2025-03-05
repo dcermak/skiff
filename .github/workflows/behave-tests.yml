@@ -1,0 +1,39 @@
+---
+name: Behave Tests
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+
+jobs:
+  behave-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install required dependencies
+        run: sudo apt install libbtrfs-dev libgpgme-dev
+
+      - name: set up go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install behave
+
+      - name: Build skiff binary
+        run: make binaries
+
+      - name: Run behave tests
+        run: python -m behave features/
