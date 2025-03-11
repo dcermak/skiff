@@ -22,4 +22,5 @@ jobs:
           go-version-file: go.mod
 
       - name: build
-        run: go build -o ./skiff ./bin/
+        run: make binaries
+        working-directory: .
