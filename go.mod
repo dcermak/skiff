@@ -1,11 +1,10 @@
 module github.com/dcermak/skiff
 
 go 1.23.1
-
 require (
-	github.com/containers/common v0.62.0
-	github.com/containers/image/v5 v5.34.1
-	github.com/containers/storage v1.57.1
+	github.com/containers/common v0.62.2
+	github.com/containers/image/v5 v5.34.2
+	github.com/containers/storage v1.57.2
 	github.com/urfave/cli/v3 v3.0.0-beta1
 )
 
