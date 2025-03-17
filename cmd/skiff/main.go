@@ -21,7 +21,7 @@ func main() {
 			unshare.MaybeReexecUsingUserNamespace(false)
 			return ctx, nil
 		},
-		Commands: []*cli.Command{&LayerUsage},
+		Commands: []*cli.Command{&LayerUsage, &topCommand},
 	}
 
 	err := cmd.Run(context.Background(), os.Args)

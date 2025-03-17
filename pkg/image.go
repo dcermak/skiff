@@ -67,11 +67,11 @@ func ImageFromURI(ctx context.Context, sysCtx *types.SystemContext, uri string) 
 	}
 
 	// at this point we're sure we have a transport
-	imgSrc, err := ref.NewImage(ctx, sysCtx)
+	img, err := ref.NewImage(ctx, sysCtx)
 	if err != nil {
 		return nil, err
 	}
-	defer imgSrc.Close()
+	defer img.Close()
 
-	return imgSrc, nil
+	return img, nil
 }
