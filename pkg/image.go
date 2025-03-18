@@ -75,8 +75,6 @@ func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri
 		}
 
 		img, _, err := runtime.LookupImage(uri, nil)
-
-		// found the image in store => exit
 		if err == nil {
 			ref, err := img.StorageReference()
 			if err != nil {
