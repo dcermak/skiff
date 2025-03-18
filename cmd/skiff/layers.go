@@ -22,7 +22,7 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 	}
 
 	res := ""
-	if layers != nil && len(layers) > 0 {
+	if len(layers) > 0 {
 		if len(inspect.LayersData) != len(layers) {
 			return "", fmt.Errorf(
 				"internal error: image inspect returned %d layers, storage returned %d layers",
