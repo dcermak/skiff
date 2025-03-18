@@ -25,13 +25,19 @@ var topCommand = cli.Command{
 	Flags: []cli.Flag{
 		&cli.BoolFlag{Name: "include-pseudo", Usage: "Include pseudo-filesystems (/dev, /proc, /sys)"},
 		&cli.BoolFlag{Name: "follow-symlinks", Usage: "Follow symbolic links"},
+		&cli.StringSliceFlag{
+			Name:    "layer",
+			Usage:   "Filter results to specific layer(s) by SHA256 digest",
+			Aliases: []string{"l"},
+		},
 	},
 	Arguments: []cli.Argument{
 		&cli.StringArg{Name: "image", Min: 1, Max: 1, Values: &url, UsageText: "Container image ref"},
 	},
 	Action: func(ctx context.Context, c *cli.Command) error {
 		sysCtx := types.SystemContext{}
-		return analyzeLayers(url[0], ctx, &sysCtx)
+		layers := c.StringSlice("layer")
+		return analyzeLayers(ctx, &sysCtx, url[0], layers)
 	},
 }
 
@@ -61,10 +67,48 @@ func (h *FileHeap) Pop() interface{} {
 	return item
 }
 
+// getFilteredLayers returns only the layers that needs to be
+// processed/extracted e.g. after user specifies specific layer(s)
+// using --layer, we shouldn't be processing all the layers.
+func getFilteredLayers(img types.Image, layers []string) ([]types.BlobInfo, error) {
+	allLayers := img.LayerInfos()
+
+	if len(layers) == 0 {
+		return allLayers, nil // No filtering needed
+	}
+
+	var filteredLayers []types.BlobInfo
+	seenLayers := make(map[string]bool)
+
+	for _, filter := range layers {
+		matchedLayers := []types.BlobInfo{}
+
+		for _, layer := range allLayers {
+			if layer.Digest.Encoded() == filter || strings.HasPrefix(layer.Digest.Encoded(), filter) {
+				matchedLayers = append(matchedLayers, layer)
+			}
+		}
+
+		if len(matchedLayers) == 0 {
+			return nil, fmt.Errorf("layer %s not found in image", filter)
+		}
+		if len(matchedLayers) > 1 {
+			return nil, fmt.Errorf("multiple layers match shortened digest %s", filter)
+		}
+
+		layer := matchedLayers[0]
+		if !seenLayers[layer.Digest.String()] {
+			filteredLayers = append(filteredLayers, layer)
+			seenLayers[layer.Digest.String()] = true
+		}
+	}
+
+	return filteredLayers, nil
+}
+
 // analyzeLayers fetches layers for a given image reference
 // reads the associated layer archives and lists file info
-// TODO: containers-storage transport fails
-func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext) error {
+func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string, layers []string) error {
 	img, err := skiff.ImageFromURI(ctx, sysCtx, uri)
 	if err != nil {
 		return err
@@ -80,7 +124,7 @@ func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext)
 	heap.Init(h)
 
 	files := make([]FileInfo, h.Len())
-	layerInfos := img.LayerInfos()
+	layerInfos, err := getFilteredLayers(img, layers)
 	for _, layer := range layerInfos {
 		blob, _, err := imgSrc.GetBlob(context.Background(), layer, none.NoCache)
 		if err != nil {
