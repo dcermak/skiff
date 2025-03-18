@@ -1,6 +1,7 @@
 module github.com/dcermak/skiff
 
 go 1.23.1
+
 require (
 	github.com/containers/common v0.62.2
 	github.com/containers/image/v5 v5.34.2
