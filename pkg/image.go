@@ -8,9 +8,41 @@ import (
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
 	"github.com/containers/storage"
+	"github.com/opencontainers/go-digest"
 )
 
-// ImageFromURI tries to obtain the image from the "most likely source"
+func layersFromImageDigest(store storage.Store, digest digest.Digest) ([]storage.Layer, error) {
+	storeImgs, err := store.ImagesByDigest(digest)
+	if err != nil {
+		return nil, err
+	}
+	if len(storeImgs) >= 1 {
+		storeImg := storeImgs[0]
+
+		imgLayers := make([]storage.Layer, 0)
+
+		// layers, err := store.Layers()
+		// if err != nil {
+		// 	return nil, err
+		// }
+
+		parentLayerID := storeImg.TopLayer
+
+		for parentLayerID != "" {
+			curLayer, err := store.Layer(parentLayerID)
+			if err != nil {
+				return nil, err
+			}
+
+			imgLayers = append(imgLayers, *curLayer)
+			parentLayerID = curLayer.Parent
+		}
+		return imgLayers, nil
+	}
+	return nil, fmt.Errorf("Did not find image %s in the image store", digest)
+}
+
+// ImageAndLayersFromURI tries to obtain the image from the "most likely source"
 //
 // If the uri includes a transport, then the uri is parsed and an Image instance
 // is returned.
@@ -18,23 +50,26 @@ import (
 // If the uri does not contain a transport, then this function first tries to
 // load the image from the (rootless) container storage. If that fails, we try
 // to load it from a registry by prepending the `docker://` transport.
-func ImageFromURI(ctx context.Context, sysCtx *types.SystemContext, uri string) (types.Image, error) {
+//
+// If the image is present in the local container store, then we also return the
+// layers of that image.
+func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri string) (types.Image, []storage.Layer, error) {
 	ref, err := alltransports.ParseImageName(uri)
 
 	// transport name missing => lookup in storage first:
 	if err != nil {
 		opts, err := storage.DefaultStoreOptions()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		store, err := storage.GetStore(opts)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		runtime, err := libimage.RuntimeFromStore(store, nil)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		img, _, err := runtime.LookupImage(uri, nil)
@@ -43,16 +78,20 @@ func ImageFromURI(ctx context.Context, sysCtx *types.SystemContext, uri string) 
 		if err == nil {
 			ref, err := img.StorageReference()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 
 			imgCloser, err := ref.NewImage(ctx, sysCtx)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			defer imgCloser.Close()
 
-			return imgCloser, nil
+			layers, err := layersFromImageDigest(store, img.Digest())
+			if err == nil {
+				return imgCloser, layers, nil
+			}
+			return imgCloser, nil, nil
 		}
 
 		// we didn't find it in the container storage
@@ -62,16 +101,16 @@ func ImageFromURI(ctx context.Context, sysCtx *types.SystemContext, uri string) 
 		// but we have to redo the parsing
 		ref, err = alltransports.ParseImageName(uri)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	// at this point we're sure we have a transport
 	img, err := ref.NewImage(ctx, sysCtx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer img.Close()
 
-	return img, nil
+	return img, nil, nil
 }
