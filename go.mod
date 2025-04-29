@@ -8,7 +8,7 @@ require (
 	github.com/containers/common v0.63.0
 	github.com/containers/image/v5 v5.35.0
 	github.com/containers/storage v1.58.0
-	github.com/urfave/cli/v3 v3.1.1
+	github.com/urfave/cli/v3 v3.3.2
 )
 
 require (
