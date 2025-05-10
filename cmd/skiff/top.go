@@ -65,7 +65,7 @@ func (h *FileHeap) Pop() interface{} {
 // reads the associated layer archives and lists file info
 // TODO: containers-storage transport fails
 func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext) error {
-	img, err := skiff.ImageFromURI(ctx, sysCtx, uri)
+	img, _, err := skiff.ImageAndLayersFromURI(ctx, sysCtx, uri)
 	if err != nil {
 		return err
 	}
