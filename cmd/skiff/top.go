@@ -27,11 +27,11 @@ var topCommand = cli.Command{
 		&cli.BoolFlag{Name: "follow-symlinks", Usage: "Follow symbolic links"},
 	},
 	Arguments: []cli.Argument{
-		&cli.StringArg{Name: "image", Min: 1, Max: 1, Values: &url, UsageText: "Container image ref"},
+		&cli.StringArg{Name: "image", UsageText: "Container image ref"},
 	},
 	Action: func(ctx context.Context, c *cli.Command) error {
 		sysCtx := types.SystemContext{}
-		return analyzeLayers(url[0], ctx, &sysCtx)
+		return analyzeLayers(c.StringArg("image"), ctx, &sysCtx)
 	},
 }
 

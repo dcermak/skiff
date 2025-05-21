@@ -29,15 +29,13 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 	return res, nil
 }
 
-var url []string
-
 var LayerUsage cli.Command = cli.Command{
 	Name:      "layers",
 	Usage:     "Print the size of each layer in an image.",
-	Arguments: []cli.Argument{&cli.StringArg{Name: "url", Min: 1, Max: 1, Values: &url, UsageText: ""}},
+	Arguments: []cli.Argument{&cli.StringArg{Name: "url", UsageText: ""}},
 	Action: func(ctx context.Context, c *cli.Command) error {
 		sysCtx := types.SystemContext{}
-		out, err := ShowLayerUsage(ctx, &sysCtx, url[0])
+		out, err := ShowLayerUsage(ctx, &sysCtx, c.StringArg("url"))
 		if err == nil {
 			fmt.Print(out)
 		}
