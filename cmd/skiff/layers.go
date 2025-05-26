@@ -11,7 +11,7 @@ import (
 )
 
 func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string) (string, error) {
-	img, err := skiff.ImageFromURI(ctx, sysCtx, uri)
+	img, layers, err := skiff.ImageAndLayersFromURI(ctx, sysCtx, uri)
 	if err != nil {
 		return "", err
 	}
@@ -22,10 +22,23 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 	}
 
 	res := ""
-	for _, l := range inspect.LayersData {
-		res += fmt.Sprintf("%s %d\n", l.Digest, l.Size)
-	}
+	if layers != nil && len(layers) > 0 {
+		if len(inspect.LayersData) != len(layers) {
+			return "", fmt.Errorf(
+				"internal error: image inspect returned %d layers, storage returned %d layers",
+				len(inspect.LayersData),
+				len(layers),
+			)
+		}
+		for i, l := range inspect.LayersData {
+			res += fmt.Sprintf("%s %d %s %d\n", l.Digest, l.Size, layers[i].ID, layers[i].UncompressedSize)
+		}
 
+	} else {
+		for _, l := range inspect.LayersData {
+			res += fmt.Sprintf("%s %d\n", l.Digest, l.Size)
+		}
+	}
 	return res, nil
 }
 
