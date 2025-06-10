@@ -5,9 +5,10 @@ go 1.23.3
 toolchain go1.24.2
 
 require (
-	github.com/containers/common v0.63.0
+	github.com/containers/common v0.63.1
 	github.com/containers/image/v5 v5.35.0
 	github.com/containers/storage v1.58.0
+	github.com/opencontainers/go-digest v1.0.0
 	github.com/urfave/cli/v3 v3.3.3
 )
 
@@ -81,7 +82,6 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
-	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/opencontainers/runc v1.2.6 // indirect
 	github.com/opencontainers/runtime-spec v1.2.1 // indirect
