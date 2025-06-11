@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/containers/image/v5/pkg/blobinfocache/none"
 	"github.com/containers/image/v5/pkg/compression"
@@ -19,28 +21,39 @@ import (
 	skiff "github.com/dcermak/skiff/pkg"
 )
 
+var humanReadable bool
+
 var topCommand = cli.Command{
 	Name:  "top",
 	Usage: "Analyze a container image and list files by size",
 	Flags: []cli.Flag{
 		&cli.BoolFlag{Name: "include-pseudo", Usage: "Include pseudo-filesystems (/dev, /proc, /sys)"},
 		&cli.BoolFlag{Name: "follow-symlinks", Usage: "Follow symbolic links"},
+		&cli.BoolFlag{Name: "human-readable", Usage: "Show file sizes in human readable format"},
+		&cli.StringSliceFlag{
+			Name:    "layer",
+			Usage:   "Filter results to specific layer(s) by SHA256 digest",
+			Aliases: []string{"l"},
+		},
 	},
 	Arguments: []cli.Argument{
 		&cli.StringArg{Name: "image", UsageText: "Container image ref"},
 	},
 	Action: func(ctx context.Context, c *cli.Command) error {
 		sysCtx := types.SystemContext{}
-		return analyzeLayers(c.StringArg("image"), ctx, &sysCtx)
+		humanReadable = c.Bool("human-readable")
+		layers := c.StringSlice("layer")
+		return analyzeLayers(ctx, &sysCtx, c.StringArg("image"), layers)
 	},
 }
 
 const defaultFileLimit = 10
 
 type FileInfo struct {
-	Path  string
-	Size  int64
-	Layer string // layer ID this file belongs to
+	Path              string
+	Size              int64
+	HumanReadableSize string
+	Layer             string // layer ID this file belongs to
 }
 
 type FileHeap []FileInfo
@@ -61,10 +74,65 @@ func (h *FileHeap) Pop() interface{} {
 	return item
 }
 
+// HumanReadableSize converts a byte count to a human readable string
+// From https://yourbasic.org/golang/formatting-byte-size-to-human-readable-format/
+func HumanReadableSize(b int64) string {
+	const unit = 1000
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB",
+		float64(b)/float64(div), "kMGTPE"[exp])
+}
+
+// getFilteredLayers returns only the layers that needs to be
+// processed/extracted e.g. after user specifies specific layer(s)
+// using --layer, we shouldn't be processing all the layers.
+func getFilteredLayers(img types.Image, layers []string) ([]types.BlobInfo, error) {
+	allLayers := img.LayerInfos()
+
+	if len(layers) == 0 {
+		return allLayers, nil // No filtering needed
+	}
+
+	var filteredLayers []types.BlobInfo
+	seenLayers := make(map[string]bool)
+
+	for _, filter := range layers {
+		matchedLayers := []types.BlobInfo{}
+
+		for _, layer := range allLayers {
+			if layer.Digest.Encoded() == filter || strings.HasPrefix(layer.Digest.Encoded(), filter) {
+				matchedLayers = append(matchedLayers, layer)
+			}
+		}
+
+		if len(matchedLayers) == 0 {
+			return nil, fmt.Errorf("layer %s not found in image", filter)
+		}
+		if len(matchedLayers) > 1 {
+			return nil, fmt.Errorf("multiple layers match shortened digest %s", filter)
+		}
+
+		layer := matchedLayers[0]
+		if !seenLayers[layer.Digest.String()] {
+			filteredLayers = append(filteredLayers, layer)
+			seenLayers[layer.Digest.String()] = true
+		}
+	}
+
+	return filteredLayers, nil
+}
+
 // analyzeLayers fetches layers for a given image reference
 // reads the associated layer archives and lists file info
 // TODO: containers-storage transport fails
-func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext) error {
+func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string, layers []string) error {
 	img, _, err := skiff.ImageAndLayersFromURI(ctx, sysCtx, uri)
 	if err != nil {
 		return err
@@ -80,7 +148,11 @@ func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext)
 	heap.Init(h)
 
 	files := make([]FileInfo, h.Len())
-	layerInfos := img.LayerInfos()
+	layerInfos, err := getFilteredLayers(img, layers)
+	if err != nil {
+		return err
+	}
+
 	for _, layer := range layerInfos {
 		blob, _, err := imgSrc.GetBlob(context.Background(), layer, none.NoCache)
 		if err != nil {
@@ -114,7 +186,12 @@ func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext)
 			}
 
 			if hdr.Typeflag == tar.TypeReg {
-				heap.Push(h, FileInfo{Path: path, Size: hdr.Size, Layer: layer.Digest.Encoded()})
+				heap.Push(h, FileInfo{
+					Path:              path,
+					Size:              hdr.Size,
+					HumanReadableSize: HumanReadableSize(hdr.Size),
+					Layer:             layer.Digest.Encoded(),
+				})
 				if h.Len() > defaultFileLimit {
 					heap.Pop(h)
 				}
@@ -127,25 +204,19 @@ func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext)
 		files = append(files, heap.Pop(h).(FileInfo))
 	}
 
-	maxPathLen, maxSizeLen, maxLayerLen := 0, 0, 12
-	for _, f := range files {
-		if len(f.Path) > maxPathLen {
-			maxPathLen = len(f.Path)
-		}
-		sizeStr := strconv.FormatInt(f.Size, 10)
-		if len(sizeStr) > maxSizeLen {
-			maxSizeLen = len(sizeStr)
-		}
-	}
-
-	fmt.Printf("%-*s	%*s	%-*s\n", maxPathLen, "File Path", maxSizeLen, "Size", maxLayerLen, "Layer ID")
-	fmt.Println(strings.Repeat("-", maxPathLen+maxSizeLen+maxLayerLen+15)) // also consider two tab chars
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.TabIndent)
+	defer w.Flush()
+	fmt.Fprintln(w, "FILE PATH\tSIZE\tLAYER ID")
 
 	slices.Reverse(files)
 	for _, f := range files {
-		sizeStr := strconv.FormatInt(f.Size, 10)
-		fmt.Printf("%-*s	%*s	%-*s\n", maxPathLen, f.Path, maxSizeLen, sizeStr, maxLayerLen, f.Layer[:12])
+		var size string
+		if humanReadable {
+			size = f.HumanReadableSize
+		} else {
+			size = strconv.FormatInt(f.Size, 10)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", f.Path, size, f.Layer[:12])
 	}
-
 	return nil
 }
