@@ -9,7 +9,7 @@ require (
 	github.com/containers/image/v5 v5.35.0
 	github.com/containers/storage v1.58.0
 	github.com/opencontainers/go-digest v1.0.0
-	github.com/urfave/cli/v3 v3.3.3
+	github.com/urfave/cli/v3 v3.3.8
 )
 
 require (
