@@ -73,6 +73,18 @@ func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri
 		}
 
 		img, _, err := runtime.LookupImage(uri, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		images, err := store.ImagesByDigest(img.Digest())
+		if err != nil {
+			return nil, nil, err
+		}
+
+		for _, i := range images {
+			println(i.ID)
+		}
 
 		// found the image in store => exit
 		if err == nil {
