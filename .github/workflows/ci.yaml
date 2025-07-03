@@ -13,8 +13,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('**/ci.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
       - name: install required dependencies
-        run: sudo apt install libbtrfs-dev libgpgme-dev
+        run: |
+          sudo apt update
+          sudo apt install libbtrfs-dev libgpgme-dev
 
       - name: set up go
         uses: actions/setup-go@v5
