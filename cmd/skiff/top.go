@@ -30,8 +30,13 @@ var topCommand = cli.Command{
 		&cli.StringArg{Name: "image", UsageText: "Container image ref"},
 	},
 	Action: func(ctx context.Context, c *cli.Command) error {
+		image := c.StringArg("image")
+		if image == "" {
+			return fmt.Errorf("image URL is required")
+		}
+
 		sysCtx := types.SystemContext{}
-		return analyzeLayers(c.StringArg("image"), ctx, &sysCtx)
+		return analyzeLayers(image, ctx, &sysCtx)
 	},
 }
 
