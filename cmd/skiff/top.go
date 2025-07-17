@@ -29,6 +29,7 @@ var topCommand = cli.Command{
 	Arguments: []cli.Argument{
 		&cli.StringArg{Name: "image", UsageText: "Container image ref"},
 	},
+	Before: setupNamespaceForStorage,
 	Action: func(ctx context.Context, c *cli.Command) error {
 		image := c.StringArg("image")
 		if image == "" {

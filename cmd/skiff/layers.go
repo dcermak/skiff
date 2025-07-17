@@ -46,6 +46,7 @@ var LayerUsage cli.Command = cli.Command{
 	Name:      "layers",
 	Usage:     "Print the size of each layer in an image.",
 	Arguments: []cli.Argument{&cli.StringArg{Name: "url", UsageText: "Image reference (e.g., registry.example.com/image:tag)"}},
+	Before: setupNamespaceForStorage,
 	Action: func(ctx context.Context, c *cli.Command) error {
 		url := c.StringArg("url")
 		if url == "" {

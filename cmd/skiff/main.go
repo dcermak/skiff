@@ -12,42 +12,44 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+// setupNamespaceForStorage sets up user namespaces needed for container storage access
+func setupNamespaceForStorage(ctx context.Context, c *cli.Command) (context.Context, error) {
+	var neededCapabilities = []capability.Cap{
+		capability.CAP_CHOWN,
+		capability.CAP_DAC_OVERRIDE,
+		capability.CAP_FOWNER,
+		capability.CAP_FSETID,
+		capability.CAP_MKNOD,
+		capability.CAP_SETFCAP,
+	}
+
+	reexec.Init()
+
+	// NewPid is deprecated so let's copy and paste its implementation 🙄
+	capabilities, err := capability.NewPid2(0)
+	if err != nil {
+		return ctx, err
+	}
+	err = capabilities.Load()
+	if err != nil {
+		return ctx, err
+	}
+
+	for _, cap := range neededCapabilities {
+		if !capabilities.Get(capability.EFFECTIVE, cap) {
+			// We miss a capability we need, create a user namespaces
+			unshare.MaybeReexecUsingUserNamespace(true)
+		}
+	}
+
+	return ctx, nil
+}
+
 func main() {
 
 	cmd := &cli.Command{
-		Name:  "skiff",
-		Usage: "Analyze the disk usage and directory structure of OCI images and its layers",
-		Before: func(ctx context.Context, c *cli.Command) (context.Context, error) {
-			var neededCapabilities = []capability.Cap{
-				capability.CAP_CHOWN,
-				capability.CAP_DAC_OVERRIDE,
-				capability.CAP_FOWNER,
-				capability.CAP_FSETID,
-				capability.CAP_MKNOD,
-				capability.CAP_SETFCAP,
-			}
-
-			reexec.Init()
-
-			// NewPid is deprecated so let's copy and paste its implementation 🙄
-			capabilities, err := capability.NewPid2(0)
-			if err != nil {
-				return ctx, err
-			}
-			err = capabilities.Load()
-			if err != nil {
-				return ctx, err
-			}
-
-			for _, cap := range neededCapabilities {
-				if !capabilities.Get(capability.EFFECTIVE, cap) {
-					// We miss a capability we need, create a user namespaces
-					unshare.MaybeReexecUsingUserNamespace(true)
-				}
-			}
-
-			return ctx, nil
-		},
+		Name:     "skiff",
+		Usage:    "Analyze the disk usage and directory structure of OCI images and its layers",
 		Commands: []*cli.Command{&LayerUsage, &topCommand},
 	}
 
