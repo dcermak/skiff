@@ -50,7 +50,7 @@ func main() {
 	cmd := &cli.Command{
 		Name:     "skiff",
 		Usage:    "Analyze the disk usage and directory structure of OCI images and its layers",
-		Commands: []*cli.Command{&LayerUsage, &topCommand},
+		Commands: []*cli.Command{&LayerUsage, &topCommand, &mountCommand, &mountHelperCommand},
 	}
 
 	err := cmd.Run(context.Background(), os.Args)
