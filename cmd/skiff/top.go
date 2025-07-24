@@ -22,8 +22,9 @@ import (
 )
 
 var topCommand = cli.Command{
-	Name:  "top",
-	Usage: "Analyze a container image and list files by size",
+	Name:      "top",
+	Usage:     "Analyze a container image and list files by size",
+	ArgsUsage: "[image]",
 	Flags: []cli.Flag{
 		&cli.BoolFlag{Name: "include-pseudo", Usage: "Include pseudo-filesystems (/dev, /proc, /sys)"},
 		&cli.BoolFlag{Name: "follow-symlinks", Usage: "Follow symbolic links"},
