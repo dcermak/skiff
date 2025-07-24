@@ -18,7 +18,7 @@ Feature: `skiff layers` command
     And stdout contains
       """
       OPTIONS:
-         --help, -h\s+show help
+         --help  show help
       """
 
   Scenario: Analyze an actual image
