@@ -21,11 +21,6 @@ func layersFromImageDigest(store storage.Store, digest digest.Digest) ([]storage
 
 		imgLayers := make([]storage.Layer, 0)
 
-		// layers, err := store.Layers()
-		// if err != nil {
-		// 	return nil, err
-		// }
-
 		parentLayerID := storeImg.TopLayer
 
 		for parentLayerID != "" {
