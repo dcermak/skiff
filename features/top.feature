@@ -13,16 +13,15 @@ Feature: `skiff top` command
     Then the exit code is 0
     And stdout is
       """
-      File Path                        	   Size	Layer ID    
-      -------------------------------------------------------------------
-      /usr/bin/container-suseconnect   	9245304	abb83fe2605d
-      /usr/lib64/libzypp.so.1735.1.1   	8767504	abb83fe2605d
-      /usr/lib/sysimage/rpm/Packages.db	7837536	dbdff6b3e297
-      /usr/lib64/libpython3.11.so.1.0  	5876440	dbdff6b3e297
-      /usr/lib64/libcrypto.so.3.1.4    	5715672	abb83fe2605d
-      /usr/lib/sysimage/rpm/Packages.db	5190128	abb83fe2605d
-      /usr/share/misc/magic.mgc        	4983184	abb83fe2605d
-      /usr/lib/git/git                 	3726520	dbdff6b3e297
-      /usr/lib/locale/locale-archive   	3058640	abb83fe2605d
-      /usr/bin/zypper                  	2915456	abb83fe2605d
+      File Path                          Size     Layer ID
+      /usr/bin/container-suseconnect     9245304  abb83fe2605d
+      /usr/lib64/libzypp.so.1735.1.1     8767504  abb83fe2605d
+      /usr/lib/sysimage/rpm/Packages.db  7837536  dbdff6b3e297
+      /usr/lib64/libpython3.11.so.1.0    5876440  dbdff6b3e297
+      /usr/lib64/libcrypto.so.3.1.4      5715672  abb83fe2605d
+      /usr/share/misc/magic.mgc          4983184  abb83fe2605d
+      /usr/lib/git/git                   3726520  dbdff6b3e297
+      /usr/lib/locale/locale-archive     3058640  abb83fe2605d
+      /usr/bin/zypper                    2915456  abb83fe2605d
+      /usr/lib/sysimage/rpm/Index.db     2756608  dbdff6b3e297
       """

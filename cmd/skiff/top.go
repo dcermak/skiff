@@ -1,18 +1,13 @@
 package main
 
 import (
-	"archive/tar"
 	"container/heap"
 	"context"
 	"fmt"
-	"io"
-	"path/filepath"
+	"os"
 	"slices"
-	"strconv"
-	"strings"
+	"text/tabwriter"
 
-	"github.com/containers/image/v5/pkg/blobinfocache/none"
-	"github.com/containers/image/v5/pkg/compression"
 	"github.com/containers/image/v5/types"
 	"github.com/urfave/cli/v3"
 
@@ -25,6 +20,7 @@ var topCommand = cli.Command{
 	Flags: []cli.Flag{
 		&cli.BoolFlag{Name: "include-pseudo", Usage: "Include pseudo-filesystems (/dev, /proc, /sys)"},
 		&cli.BoolFlag{Name: "follow-symlinks", Usage: "Follow symbolic links"},
+		&cli.BoolFlag{Name: "human-readable", Usage: "Display sizes in human readable format (e.g., 1K, 234M, 2G)"},
 	},
 	Arguments: []cli.Argument{
 		&cli.StringArg{Name: "image", UsageText: "Container image ref"},
@@ -36,26 +32,20 @@ var topCommand = cli.Command{
 		}
 
 		sysCtx := types.SystemContext{}
-		return analyzeLayers(image, ctx, &sysCtx)
+		return analyzeLayers(image, ctx, &sysCtx, c.Bool("human-readable"))
 	},
 }
 
 const defaultFileLimit = 10
 
-type FileInfo struct {
-	Path  string
-	Size  int64
-	Layer string // layer ID this file belongs to
-}
-
-type FileHeap []FileInfo
+type FileHeap []skiff.FileInfo
 
 func (h FileHeap) Len() int           { return len(h) }
 func (h FileHeap) Less(i, j int) bool { return h[i].Size < h[j].Size }
 func (h FileHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
 func (h *FileHeap) Push(x interface{}) {
-	*h = append(*h, x.(FileInfo))
+	*h = append(*h, x.(skiff.FileInfo))
 }
 
 func (h *FileHeap) Pop() interface{} {
@@ -68,88 +58,49 @@ func (h *FileHeap) Pop() interface{} {
 
 // analyzeLayers fetches layers for a given image reference
 // reads the associated layer archives and lists file info
-// TODO: containers-storage transport fails
-func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext) error {
+func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext, humanReadable bool) error {
 	img, _, err := skiff.ImageAndLayersFromURI(ctx, sysCtx, uri)
 	if err != nil {
 		return err
 	}
 
-	imgSrc, err := img.Reference().NewImageSource(ctx, sysCtx)
+	filesMap, err := skiff.ExtractFilesystem(ctx, img, sysCtx)
 	if err != nil {
 		return err
 	}
-	defer imgSrc.Close()
 
+	// Convert map to slice and build heap
 	h := &FileHeap{}
 	heap.Init(h)
 
-	files := make([]FileInfo, h.Len())
-	layerInfos := img.LayerInfos()
-	for _, layer := range layerInfos {
-		blob, _, err := imgSrc.GetBlob(context.Background(), layer, none.NoCache)
-		if err != nil {
-			return err
-		}
-		defer blob.Close()
-
-		uncompressedStream, _, err := compression.AutoDecompress(blob)
-		if err != nil {
-			return fmt.Errorf("auto-decompressing input: %w", err)
-		}
-		defer uncompressedStream.Close()
-
-		tr := tar.NewReader(uncompressedStream)
-		for {
-			hdr, err := tr.Next()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return fmt.Errorf("failed to read tar header: %w", err)
-			}
-
-			// TODO: follow symlinks
-			// if hdr.Typeflag == tar.TypeSymlink
-
-			path, err := filepath.Abs(filepath.Join("/", hdr.Name))
-			if err != nil {
-				// TODO: perhaps just log and not error out
-				return fmt.Errorf("error generating absolute representation of path: %w", err)
-			}
-
-			if hdr.Typeflag == tar.TypeReg {
-				heap.Push(h, FileInfo{Path: path, Size: hdr.Size, Layer: layer.Digest.Encoded()})
-				if h.Len() > defaultFileLimit {
-					heap.Pop(h)
-				}
-			}
-		}
-
-	}
-
-	for i := 0; h.Len() > 0; i++ {
-		files = append(files, heap.Pop(h).(FileInfo))
-	}
-
-	maxPathLen, maxSizeLen, maxLayerLen := 0, 0, 12
-	for _, f := range files {
-		if len(f.Path) > maxPathLen {
-			maxPathLen = len(f.Path)
-		}
-		sizeStr := strconv.FormatInt(f.Size, 10)
-		if len(sizeStr) > maxSizeLen {
-			maxSizeLen = len(sizeStr)
+	for _, file := range filesMap {
+		heap.Push(h, file)
+		if h.Len() > defaultFileLimit {
+			heap.Pop(h)
 		}
 	}
 
-	fmt.Printf("%-*s	%*s	%-*s\n", maxPathLen, "File Path", maxSizeLen, "Size", maxLayerLen, "Layer ID")
-	fmt.Println(strings.Repeat("-", maxPathLen+maxSizeLen+maxLayerLen+15)) // also consider two tab chars
+	// Extract files from heap in reverse order (largest first)
+	var files []skiff.FileInfo
+	for h.Len() > 0 {
+		files = append(files, heap.Pop(h).(skiff.FileInfo))
+	}
 
 	slices.Reverse(files)
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.TabIndent)
+	defer w.Flush()
+
+	fmt.Fprintln(w, "File Path\tSize\tLayer ID")
+
 	for _, f := range files {
-		sizeStr := strconv.FormatInt(f.Size, 10)
-		fmt.Printf("%-*s	%*s	%-*s\n", maxPathLen, f.Path, maxSizeLen, sizeStr, maxLayerLen, f.Layer[:12])
+		var sizeStr string
+		if humanReadable {
+			sizeStr = skiff.HumanReadableSize(f.Size)
+		} else {
+			sizeStr = fmt.Sprintf("%d", f.Size)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", f.Path, sizeStr, f.Layer[:12])
 	}
 
 	return nil
