@@ -121,7 +121,7 @@ func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri
 //
 // Returns a slice of BlobInfo containing layer information needed for
 // blob retrieval operations.
-func BlobInfoFromImage(img types.Image, ctx context.Context, sysCtx *types.SystemContext) ([]types.BlobInfo, error) {
+func BlobInfoFromImage(ctx context.Context, img types.Image, sysCtx *types.SystemContext) ([]types.BlobInfo, error) {
 	var layerInfos []types.BlobInfo
 
 	// For containers-storage transport, use LayerInfosForCopy to get storage-accessible digests
@@ -161,4 +161,20 @@ func FormatDigest(digest digest.Digest, fullDigest bool) string {
 		return encoded[:12]
 	}
 	return encoded
+}
+
+// HumanReadableSize converts a byte count to a human readable string
+// From https://yourbasic.org/golang/formatting-byte-size-to-human-readable-format/
+func HumanReadableSize(b int64) string {
+	const unit = 1000
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB",
+		float64(b)/float64(div), "kMGTPE"[exp])
 }

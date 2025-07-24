@@ -22,8 +22,9 @@ import (
 )
 
 var topCommand = cli.Command{
-	Name:  "top",
-	Usage: "Analyze a container image and list files by size",
+	Name:      "top",
+	Usage:     "Analyze a container image and list files by size",
+	ArgsUsage: "[image]",
 	Flags: []cli.Flag{
 		&cli.BoolFlag{Name: "include-pseudo", Usage: "Include pseudo-filesystems (/dev, /proc, /sys)"},
 		&cli.BoolFlag{Name: "follow-symlinks", Usage: "Follow symbolic links"},
@@ -86,64 +87,55 @@ func (h *FileHeap) Pop() interface{} {
 	return item
 }
 
-// HumanReadableSize converts a byte count to a human readable string
-// From https://yourbasic.org/golang/formatting-byte-size-to-human-readable-format/
-func HumanReadableSize(b int64) string {
-	const unit = 1000
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB",
-		float64(b)/float64(div), "kMGTPE"[exp])
-}
-
-// getFilteredLayers returns only the layers that needs to be
-// processed/extracted e.g. after user specifies specific layer(s)
-// using --layer, we shouldn't be processing all the layers.
-// If layers is empty, returns all layers in the image.
-func getFilteredLayers(img types.Image, layers []string) ([]types.BlobInfo, error) {
-	allLayers := img.LayerInfos()
-
-	if len(layers) == 0 {
+// getFilteredLayers returns only the layers that need to be processed/extracted
+// when user specifies specific layer(s) using --layer. This is a pure function
+// that takes all required data as parameters, making it easy to test.
+// If filterDigests is empty, returns all layers.
+func getFilteredLayers(allLayers []types.BlobInfo, manifestLayers []types.BlobInfo, filterDigests []string) ([]types.BlobInfo, error) {
+	if len(filterDigests) == 0 {
 		return allLayers, nil // No filtering needed
 	}
 
-	// Build a map for efficient layer lookup
-	layerMap := make(map[string]types.BlobInfo)
-	for _, layer := range allLayers {
-		layerMap[layer.Digest.Encoded()] = layer
+	// Build a map from manifest digest to blob info
+	manifestToBlobMap := make(map[string]types.BlobInfo)
+
+	// Map manifest layers to blob infos by position
+	if len(manifestLayers) == len(allLayers) {
+		for i, manifestLayer := range manifestLayers {
+			manifestToBlobMap[manifestLayer.Digest.Encoded()] = allLayers[i]
+		}
+	} else {
+		// Fallback: try to match by digest if lengths differ
+		for _, blobInfo := range allLayers {
+			manifestToBlobMap[blobInfo.Digest.Encoded()] = blobInfo
+		}
 	}
 
 	var filteredLayers []types.BlobInfo
 	seenLayers := make(map[string]bool) // Track which layers we've already added
 
-	for _, filter := range layers {
+	for _, searchDigest := range filterDigests {
 		var matchedLayersDigests []string
-		for layerDigest := range layerMap {
-			if layerDigest == filter || strings.HasPrefix(layerDigest, filter) {
-				matchedLayersDigests = append(matchedLayersDigests, layerDigest)
+		for manifestDigest := range manifestToBlobMap {
+			if manifestDigest == searchDigest || strings.HasPrefix(manifestDigest, searchDigest) {
+				matchedLayersDigests = append(matchedLayersDigests, manifestDigest)
 			}
 		}
 
 		if len(matchedLayersDigests) == 0 {
-			return nil, fmt.Errorf("layer %s not found in image", filter)
+			return nil, fmt.Errorf("layer %s not found in image", searchDigest)
 		}
 		if len(matchedLayersDigests) > 1 {
-			return nil, fmt.Errorf("multiple layers match shortened digest %s", filter)
+			return nil, fmt.Errorf("multiple layers match shortened digest %s", searchDigest)
 		}
 
 		matchedLayerDigest := matchedLayersDigests[0]
-		layer := layerMap[matchedLayerDigest]
+		blobInfo := manifestToBlobMap[matchedLayerDigest]
 
 		// Only add if we haven't seen this layer before
-		if !seenLayers[layer.Digest.String()] {
-			filteredLayers = append(filteredLayers, layer)
-			seenLayers[layer.Digest.String()] = true
+		if !seenLayers[blobInfo.Digest.String()] {
+			filteredLayers = append(filteredLayers, blobInfo)
+			seenLayers[blobInfo.Digest.String()] = true
 		}
 	}
 
@@ -167,10 +159,20 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 	h := &FileHeap{}
 	heap.Init(h)
 
-	layerInfos, err := getFilteredLayers(img, layers)
+	// Get data needed for filtering
+	allBlobInfos, err := skiff.BlobInfoFromImage(ctx, img, sysCtx)
 	if err != nil {
 		return err
 	}
+
+	manifestLayers := img.LayerInfos()
+
+	// Filter layers using pure function
+	layerInfos, err := getFilteredLayers(allBlobInfos, manifestLayers, layers)
+	if err != nil {
+		return err
+	}
+
 
 	for _, layer := range layerInfos {
 		blob, _, err := imgSrc.GetBlob(context.Background(), layer, none.NoCache)
@@ -206,12 +208,15 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 			}
 
 			if hdr.Typeflag == tar.TypeReg {
-				heap.Push(h, FileInfo{
-					Path:              path,
-					Size:              hdr.Size,
-					HumanReadableSize: HumanReadableSize(hdr.Size),
-					Layer:             layer.Digest.Encoded(),
-				})
+				fileInfo := FileInfo{
+					Path:  path,
+					Size:  hdr.Size,
+					Layer: layer.Digest.Encoded(),
+				}
+				if humanReadable {
+					fileInfo.HumanReadableSize = skiff.HumanReadableSize(hdr.Size)
+				}
+				heap.Push(h, fileInfo)
 				if h.Len() > defaultFileLimit {
 					heap.Pop(h)
 				}

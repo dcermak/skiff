@@ -1,16 +1,15 @@
 package main
 
 import (
-	"context"
-	"io"
+	"strings"
 	"testing"
 
 	"container/heap"
 
-	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/types"
 	"github.com/opencontainers/go-digest"
-	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+
+	skiff "github.com/dcermak/skiff/pkg"
 )
 
 func TestHumanReadableSize(t *testing.T) {
@@ -32,7 +31,7 @@ func TestHumanReadableSize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := HumanReadableSize(tt.bytes)
+			result := skiff.HumanReadableSize(tt.bytes)
 			if result != tt.expected {
 				t.Errorf("HumanReadableSize(%d) = %s, want %s", tt.bytes, result, tt.expected)
 			}
@@ -90,49 +89,18 @@ func TestFileHeap(t *testing.T) {
 	}
 }
 
-// MockImage implements types.Image for testing
-type MockImage struct {
-	layers []types.BlobInfo
-}
-
-func (m *MockImage) LayerInfos() []types.BlobInfo {
-	return m.layers
-}
-
-// Implement other required methods with empty implementations
-func (m *MockImage) Reference() types.ImageReference                                 { return nil }
-func (m *MockImage) Manifest(ctx context.Context) ([]byte, string, error)            { return nil, "", nil }
-func (m *MockImage) Signatures(ctx context.Context) ([][]byte, error)                { return nil, nil }
-func (m *MockImage) ConfigInfo() types.BlobInfo                                      { return types.BlobInfo{} }
-func (m *MockImage) ConfigBlob(ctx context.Context) ([]byte, error)                  { return nil, nil }
-func (m *MockImage) OCIConfig(ctx context.Context) (*v1.Image, error)                { return nil, nil }
-func (m *MockImage) LayerInfosForCopy(ctx context.Context) ([]types.BlobInfo, error) { return nil, nil }
-func (m *MockImage) EmbeddedDockerReferenceConflicts(ref reference.Named) bool       { return false }
-func (m *MockImage) Inspect(ctx context.Context) (*types.ImageInspectInfo, error)    { return nil, nil }
-func (m *MockImage) UpdatedImageNeedsLayerDiffIDs(options types.ManifestUpdateOptions) bool {
-	return false
-}
-func (m *MockImage) UpdatedImage(ctx context.Context, options types.ManifestUpdateOptions) (types.Image, error) {
-	return nil, nil
-}
-func (m *MockImage) SupportsGetBlobAt() bool { return false }
-func (m *MockImage) GetBlobAt(ctx context.Context, info types.BlobInfo, chunks []types.BlobInfo) (chan io.ReadCloser, chan error, error) {
-	return nil, nil, nil
-}
-func (m *MockImage) SupportsEncryption(ctx context.Context) bool { return false }
-func (m *MockImage) Size() (int64, error)                        { return 0, nil }
-func (m *MockImage) Close() error                                { return nil }
 
 func TestGetFilteredLayers(t *testing.T) {
-	// Create mock layers with proper digest format
+	// Create test layers with proper digest format
 	layer1 := types.BlobInfo{Digest: digest.Digest("sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")}
 	layer2 := types.BlobInfo{Digest: digest.Digest("sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")}
 	layer3 := types.BlobInfo{Digest: digest.Digest("sha256:fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321")}
 	layer4 := types.BlobInfo{Digest: digest.Digest("sha256:1234567890bbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111")} // Same prefix as layer1
 
-	mockImage := &MockImage{
-		layers: []types.BlobInfo{layer1, layer2, layer3, layer4},
-	}
+	allLayers := []types.BlobInfo{layer1, layer2, layer3, layer4}
+	
+	// Create corresponding manifest layers (same digests for this test)
+	manifestLayers := []types.BlobInfo{layer1, layer2, layer3, layer4}
 
 	tests := []struct {
 		name          string
@@ -189,14 +157,14 @@ func TestGetFilteredLayers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := getFilteredLayers(mockImage, tt.filterLayers)
+			result, err := getFilteredLayers(allLayers, manifestLayers, tt.filterLayers)
 
 			if tt.expectError {
 				if err == nil {
 					t.Errorf("Expected error but got none")
 					return
 				}
-				if tt.errorContains != "" && !contains(err.Error(), tt.errorContains) {
+				if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
 					t.Errorf("Expected error to contain '%s', got '%s'", tt.errorContains, err.Error())
 				}
 				return
@@ -212,19 +180,6 @@ func TestGetFilteredLayers(t *testing.T) {
 			}
 		})
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
-			func() bool {
-				for i := 0; i <= len(s)-len(substr); i++ {
-					if s[i:i+len(substr)] == substr {
-						return true
-					}
-				}
-				return false
-			}())))
 }
 
 func TestFileInfo(t *testing.T) {
