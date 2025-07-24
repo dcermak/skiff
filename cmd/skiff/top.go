@@ -68,7 +68,6 @@ func (h *FileHeap) Pop() interface{} {
 
 // analyzeLayers fetches layers for a given image reference
 // reads the associated layer archives and lists file info
-// TODO: containers-storage transport fails
 func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext) error {
 	img, _, err := skiff.ImageAndLayersFromURI(ctx, sysCtx, uri)
 	if err != nil {
@@ -85,7 +84,12 @@ func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext)
 	heap.Init(h)
 
 	files := make([]FileInfo, h.Len())
-	layerInfos := img.LayerInfos()
+
+	layerInfos, err := skiff.BlobInfoFromImage(img, ctx, sysCtx)
+	if err != nil {
+		return err
+	}
+
 	for _, layer := range layerInfos {
 		blob, _, err := imgSrc.GetBlob(context.Background(), layer, none.NoCache)
 		if err != nil {
