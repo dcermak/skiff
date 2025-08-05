@@ -5,7 +5,7 @@ go 1.23.3
 toolchain go1.24.2
 
 require (
-	github.com/containers/common v0.64.0
+	github.com/containers/common v0.64.1
 	github.com/containers/image/v5 v5.36.1
 	github.com/containers/storage v1.59.1
 	github.com/opencontainers/go-digest v1.0.0
