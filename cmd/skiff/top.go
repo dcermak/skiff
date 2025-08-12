@@ -147,7 +147,7 @@ func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext)
 		}
 	}
 
-	fmt.Printf("%-*s	%*s	%-*s\n", maxPathLen, "File Path", maxSizeLen, "Size", maxLayerLen, "Layer ID")
+	fmt.Printf("%-*s	%*s	%s\n", maxPathLen, "File Path", maxSizeLen, "Size", "Layer ID")
 	fmt.Println(strings.Repeat("-", maxPathLen+maxSizeLen+maxLayerLen+15)) // also consider two tab chars
 
 	slices.Reverse(files)
