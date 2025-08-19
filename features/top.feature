@@ -14,7 +14,7 @@ Feature: `skiff top` command
     Then the exit code is 0
     And stdout is
       """
-      File Path                        	   Size	Layer ID    
+      File Path                        	   Size	Layer ID
       -------------------------------------------------------------------
       /usr/bin/container-suseconnect   	9245304	abb83fe2605d
       /usr/lib64/libzypp.so.1735.1.1   	8767504	abb83fe2605d
@@ -35,7 +35,7 @@ Feature: `skiff top` command
     Then the exit code is 0
     And stdout is
       """
-      File Path                        	   Size	Layer ID    
+      File Path                        	   Size	Layer ID
       -------------------------------------------------------------------
       /usr/bin/container-suseconnect   	9245304	4672d0cba723
       /usr/lib64/libzypp.so.1735.1.1   	8767504	4672d0cba723
