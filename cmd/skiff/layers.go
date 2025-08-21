@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"text/tabwriter"
 
 	"github.com/containers/image/v5/types"
 	"github.com/urfave/cli/v3"
@@ -10,36 +12,38 @@ import (
 	skiff "github.com/dcermak/skiff/pkg"
 )
 
-func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string) (string, error) {
+func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string, output io.Writer) error {
 	img, layers, err := skiff.ImageAndLayersFromURI(ctx, sysCtx, uri)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	inspect, err := img.Inspect(ctx)
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	res := ""
+	w := tabwriter.NewWriter(output, 0, 8, 2, ' ', 0)
 	if layers != nil && len(layers) > 0 {
 		if len(inspect.LayersData) != len(layers) {
-			return "", fmt.Errorf(
+			return fmt.Errorf(
 				"internal error: image inspect returned %d layers, storage returned %d layers",
 				len(inspect.LayersData),
 				len(layers),
 			)
 		}
+		fmt.Fprintln(w, "Digest\tSize\tUncompressed Digest\tUncompressed Size")
 		for i, l := range inspect.LayersData {
-			res += fmt.Sprintf("%s %d %s %d\n", l.Digest, l.Size, layers[i].ID, layers[i].UncompressedSize)
+			fmt.Fprintf(w, "%s\t%d\t%s\t%d\n", l.Digest, l.Size, layers[i].ID, layers[i].UncompressedSize)
 		}
 
 	} else {
+		fmt.Fprintln(w, "Digest\tSize")
 		for _, l := range inspect.LayersData {
-			res += fmt.Sprintf("%s %d\n", l.Digest, l.Size)
+			fmt.Fprintf(w, "%s\t%d\n", l.Digest, l.Size)
 		}
 	}
-	return res, nil
+	return w.Flush()
 }
 
 var LayerUsage cli.Command = cli.Command{
@@ -53,10 +57,6 @@ var LayerUsage cli.Command = cli.Command{
 		}
 
 		sysCtx := types.SystemContext{}
-		out, err := ShowLayerUsage(ctx, &sysCtx, url)
-		if err == nil {
-			fmt.Print(out)
-		}
-		return err
+		return ShowLayerUsage(ctx, &sysCtx, url, c.Writer)
 	},
 }
