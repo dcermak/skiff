@@ -3,6 +3,7 @@ package skiff
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/containers/common/libimage"
 	"github.com/containers/image/v5/transports/alltransports"
@@ -32,6 +33,10 @@ func layersFromImageDigest(store storage.Store, digest digest.Digest) ([]storage
 			imgLayers = append(imgLayers, *curLayer)
 			parentLayerID = curLayer.Parent
 		}
+		// Important: we started inserting the topLayer, but the rest of
+		// the code expects layer[0] to be the bottom layer!!
+		slices.Reverse(imgLayers)
+
 		return imgLayers, nil
 	}
 	return nil, fmt.Errorf("Did not find image %s in the image store", digest)
