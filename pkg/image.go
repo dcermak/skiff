@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/containers/common/libimage"
+	storageTransport "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
 	"github.com/containers/storage"
@@ -56,8 +57,9 @@ func layersFromImageDigest(store storage.Store, digest digest.Digest) ([]storage
 func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri string) (types.Image, []storage.Layer, error) {
 	ref, err := alltransports.ParseImageName(uri)
 
-	// transport name missing => lookup in storage first:
-	if err != nil {
+	// transport name missing or its using the containers-storage
+	// => lookup in storage first:
+	if err != nil || ref.Transport().Name() == storageTransport.Transport.Name() {
 		opts, err := storage.DefaultStoreOptions()
 		if err != nil {
 			return nil, nil, err

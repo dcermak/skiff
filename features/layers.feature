@@ -32,6 +32,17 @@ Feature: `skiff layers` command
       sha256:dbdff6b3e29778a160277784fbcfc864cf1e0c6df77edbac2bafb777c16b77b6  46534194
       """
 
+  Scenario: Analyze a local image pulled from the registry with an explicit containers-storage transport
+    Given I run podman pull registry.suse.com/bci/python@sha256:677b52cc1d587ff72430f1b607343a3d1f88b15a9bbd999601554ff303d6774f
+    And I run skiff with the subcommand "layers containers-storage:registry.suse.com/bci/python@sha256:677b52cc1d587ff72430f1b607343a3d1f88b15a9bbd999601554ff303d6774f"
+    Then the exit code is 0
+    And stdout is
+      """
+      Digest                                                                   Size      Uncompressed Digest                                                      Uncompressed Size
+      sha256:abb83fe2605d91490ec6d6812c2fec309feb463e4359f8f971428bb560c38af1  47480531  sha256:4672d0cba723f1a9a7b91c1e06f5d8801a076b1bdf4990806cdaabcd53992738  125604864
+      sha256:dbdff6b3e29778a160277784fbcfc864cf1e0c6df77edbac2bafb777c16b77b6  46534194  sha256:88304527ded0288579ec4780fe377a7fabc5bc92f965c18e9ee734a8bb1794bb  129486336
+      """
+
   Scenario: Analyze image from podman storage
     Given I run podman pull ghcr.io/github/github-mcp-server@sha256:0c720d3b8aab0e5107a2631516543095c6967637b52b8782dc9ee527a0803012
     Then the exit code is 0
