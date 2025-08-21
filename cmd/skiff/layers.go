@@ -34,7 +34,7 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 		}
 		fmt.Fprintln(w, "Digest\tSize\tUncompressed Digest\tUncompressed Size")
 		for i, l := range inspect.LayersData {
-			fmt.Fprintf(w, "%s\t%d\t%s\t%d\n", l.Digest, l.Size, layers[i].ID, layers[i].UncompressedSize)
+			fmt.Fprintf(w, "%s\t%d\t%s\t%d\n", l.Digest, l.Size, layers[i].UncompressedDigest, layers[i].UncompressedSize)
 		}
 
 	} else {
