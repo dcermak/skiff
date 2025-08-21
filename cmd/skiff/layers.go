@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/containers/image/v5/types"
+	"github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v3"
 
 	skiff "github.com/dcermak/skiff/pkg"
@@ -24,6 +25,8 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 	}
 
 	w := tabwriter.NewWriter(output, 0, 8, 2, ' ', 0)
+	defer w.Flush()
+
 	if layers != nil && len(layers) > 0 {
 		if len(inspect.LayersData) != len(layers) {
 			return fmt.Errorf(
@@ -32,18 +35,36 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 				len(layers),
 			)
 		}
-		fmt.Fprintln(w, "Digest\tSize\tUncompressed Digest\tUncompressed Size")
-		for i, l := range inspect.LayersData {
-			fmt.Fprintf(w, "%s\t%d\t%s\t%d\n", l.Digest, l.Size, layers[i].UncompressedDigest, layers[i].UncompressedSize)
+		fmt.Fprintln(w, "Diff ID\tUncompressed Size")
+		for _, l := range layers {
+			fmt.Fprintf(w, "%s\t%d\n", l.UncompressedDigest, l.UncompressedSize)
 		}
 
 	} else {
-		fmt.Fprintln(w, "Digest\tSize")
-		for _, l := range inspect.LayersData {
-			fmt.Fprintf(w, "%s\t%d\n", l.Digest, l.Size)
+		// in theory, the OCI Config contains the 'rootfs.diffids' array
+		// with the diffIDs i.e. the uncompressed digests
+		// => use that if available otherwise we fall back to compressed digests
+		conf, err := img.OCIConfig(ctx)
+		diffIDs := []digest.Digest{}
+
+		// only get them if the rootfs type is correct
+		if err == nil && conf != nil && conf.RootFS.Type == "layers" {
+			diffIDs = conf.RootFS.DiffIDs
+		}
+
+		if len(diffIDs) == len(inspect.LayersData) {
+			fmt.Fprintln(w, "Diff ID\tCompressed Size")
+			for i, l := range inspect.LayersData {
+				fmt.Fprintf(w, "%s\t%d\n", conf.RootFS.DiffIDs[i], l.Size)
+			}
+		} else {
+			fmt.Fprintln(w, "Compressed Digest\tCompressed Size")
+			for _, l := range inspect.LayersData {
+				fmt.Fprintf(w, "%s\t%d\n", l.Digest, l.Size)
+			}
 		}
 	}
-	return w.Flush()
+	return nil
 }
 
 var LayerUsage cli.Command = cli.Command{
