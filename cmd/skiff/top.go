@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"container/heap"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/containers/image/v5/pkg/blobinfocache/none"
 	"github.com/containers/image/v5/pkg/compression"
 	"github.com/containers/image/v5/types"
+	"github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v3"
 
 	skiff "github.com/dcermak/skiff/pkg"
@@ -35,7 +37,7 @@ var topCommand = cli.Command{
 		},
 		&cli.StringSliceFlag{
 			Name:    "layer",
-			Usage:   "Filter results to specific layer(s) by SHA256 digest. If not specified, all layers are included (not an empty result).",
+			Usage:   "Filter results to specific layer(s) by diffID (uncompressed SHA256). If not specified, all layers are included (not an empty result).",
 			Aliases: []string{"l"},
 		},
 	},
@@ -51,7 +53,7 @@ var topCommand = cli.Command{
 		humanReadable := c.Bool("human-readable")
 		layers := c.StringSlice("layer")
 		if c.IsSet("layer") && len(layers) == 0 {
-			return fmt.Errorf("--layer flag provided but no layer digest specified; please provide at least one layer digest")
+			return fmt.Errorf("--layer flag provided but no diffID specified; please provide at least one diffID")
 		}
 
 		sysCtx := types.SystemContext{}
@@ -66,7 +68,7 @@ type FileInfo struct {
 	Path              string
 	Size              int64
 	HumanReadableSize string
-	Layer             string // layer ID this file belongs to
+	DiffID            digest.Digest // diffID of the layer this file belongs to
 }
 
 type FileHeap []FileInfo
@@ -87,69 +89,52 @@ func (h *FileHeap) Pop() interface{} {
 	return item
 }
 
-// getFilteredLayers returns only the layers that need to be processed/extracted
-// when user specifies specific layer(s) using --layer. This is a pure function
-// that takes all required data as parameters, making it easy to test.
-// If filterDigests is empty, returns all layers.
-func getFilteredLayers(allLayers []types.BlobInfo, manifestLayers []types.BlobInfo, filterDigests []string) ([]types.BlobInfo, error) {
-	if len(filterDigests) == 0 {
-		return allLayers, nil // No filtering needed
+// getLayersByDiffID returns layer blob infos filtered by user-provided diffIDs
+// by looking up diffIDs and mapping to manifest layers
+func getLayersByDiffID(manifestLayers []types.BlobInfo, allDiffIDs []digest.Digest, filterDiffIDs []string) ([]types.BlobInfo, []digest.Digest, error) {
+	// If no filtering, return all layers with all their diffIDs
+	if len(filterDiffIDs) == 0 {
+		allBlobInfos := make([]types.BlobInfo, len(manifestLayers))
+		copy(allBlobInfos, manifestLayers)
+		return allBlobInfos, allDiffIDs, nil
 	}
 
-	// Build a map from manifest digest to blob info
-	manifestToBlobMap := make(map[string]types.BlobInfo)
-
-	// Map manifest layers to blob infos by position
-	if len(manifestLayers) == len(allLayers) {
-		for i, manifestLayer := range manifestLayers {
-			manifestToBlobMap[manifestLayer.Digest.Encoded()] = allLayers[i]
-		}
-	} else {
-		// Fallback: try to match by digest if lengths differ
-		for _, blobInfo := range allLayers {
-			manifestToBlobMap[blobInfo.Digest.Encoded()] = blobInfo
-		}
-	}
-
+	// Filter layers by user-provided diffIDs
 	var filteredLayers []types.BlobInfo
-	seenLayers := make(map[string]bool) // Track which layers we've already added
+	var filteredDiffIDs []digest.Digest
 
-	for _, searchDigest := range filterDigests {
-		var matchedLayersDigests []string
-		for manifestDigest := range manifestToBlobMap {
-			if manifestDigest == searchDigest || strings.HasPrefix(manifestDigest, searchDigest) {
-				matchedLayersDigests = append(matchedLayersDigests, manifestDigest)
+	// Map user diffIDs to layer indices
+	for _, userDiffID := range filterDiffIDs {
+		found := false
+		for i, configDiffID := range allDiffIDs {
+			// Match full diffID or prefix
+			if configDiffID.String() == userDiffID || strings.HasPrefix(configDiffID.Encoded(), userDiffID) {
+				if i < len(manifestLayers) {
+					filteredLayers = append(filteredLayers, manifestLayers[i])
+					filteredDiffIDs = append(filteredDiffIDs, configDiffID)
+					found = true
+					break
+				}
 			}
 		}
-
-		if len(matchedLayersDigests) == 0 {
-			return nil, fmt.Errorf("layer %s not found in image", searchDigest)
-		}
-		if len(matchedLayersDigests) > 1 {
-			return nil, fmt.Errorf("multiple layers match shortened digest %s", searchDigest)
-		}
-
-		matchedLayerDigest := matchedLayersDigests[0]
-		blobInfo := manifestToBlobMap[matchedLayerDigest]
-
-		// Only add if we haven't seen this layer before
-		if !seenLayers[blobInfo.Digest.String()] {
-			filteredLayers = append(filteredLayers, blobInfo)
-			seenLayers[blobInfo.Digest.String()] = true
+		if !found {
+			return nil, nil, fmt.Errorf("diffID %s not found in image", userDiffID)
 		}
 	}
 
-	return filteredLayers, nil
+	return filteredLayers, filteredDiffIDs, nil
 }
 
 // analyzeLayers fetches layers for a given image reference
 // reads the associated layer archives and lists file info
 func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string, layers []string, humanReadable bool) error {
+	// represents an image from any transport (docker://, containers-storage://, etc.)
 	img, _, err := skiff.ImageAndLayersFromURI(ctx, sysCtx, uri)
 	if err != nil {
 		return err
 	}
 
+	// image source that helps us fetch layers to eventually show files from the stream
 	imgSrc, err := img.Reference().NewImageSource(ctx, sysCtx)
 	if err != nil {
 		return err
@@ -159,22 +144,44 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 	h := &FileHeap{}
 	heap.Init(h)
 
-	// Get data needed for filtering
-	allBlobInfos, err := skiff.BlobInfoFromImage(ctx, img, sysCtx)
+	// Get transport-specific layer blob infos
+	manifestLayers, err := skiff.BlobInfoFromImage(ctx, sysCtx, img)
+	if err != nil {
+		return fmt.Errorf("failed to get blob info from image: %w", err)
+	}
+
+	// Get image config to access diffIDs
+	configBlob, err := img.ConfigBlob(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get config blob: %w", err)
+	}
+
+	var config struct {
+		RootFS struct {
+			DiffIDs []string `json:"diff_ids"`
+		} `json:"rootfs"`
+	}
+	if err := json.Unmarshal(configBlob, &config); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Parse diffIDs from config into digest.Digest slice
+	allDiffIDs := make([]digest.Digest, len(config.RootFS.DiffIDs))
+	for i, diffIDStr := range config.RootFS.DiffIDs {
+		diffID, err := digest.Parse(diffIDStr)
+		if err != nil {
+			return fmt.Errorf("failed to parse diffID %s: %w", diffIDStr, err)
+		}
+		allDiffIDs[i] = diffID
+	}
+
+	// Get filtered layers and their diffIDs using the refactored function
+	layerInfos, diffIDs, err := getLayersByDiffID(manifestLayers, allDiffIDs, layers)
 	if err != nil {
 		return err
 	}
 
-	manifestLayers := img.LayerInfos()
-
-	// Filter layers using pure function
-	layerInfos, err := getFilteredLayers(allBlobInfos, manifestLayers, layers)
-	if err != nil {
-		return err
-	}
-
-
-	for _, layer := range layerInfos {
+	for i, layer := range layerInfos {
 		blob, _, err := imgSrc.GetBlob(context.Background(), layer, none.NoCache)
 		if err != nil {
 			return err
@@ -186,6 +193,15 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 			return fmt.Errorf("auto-decompressing input: %w", err)
 		}
 		defer uncompressedStream.Close()
+
+		// Get the diffID for this layer
+		var layerDiffID digest.Digest
+		if i < len(diffIDs) {
+			layerDiffID = diffIDs[i]
+		} else {
+			// TODO(danishprakash): error out if arrays mismatch or let it continue
+			layerDiffID = "sha256:unknown"
+		}
 
 		tr := tar.NewReader(uncompressedStream)
 		for {
@@ -209,9 +225,9 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 
 			if hdr.Typeflag == tar.TypeReg {
 				fileInfo := FileInfo{
-					Path:  path,
-					Size:  hdr.Size,
-					Layer: layer.Digest.Encoded(),
+					Path:   path,
+					Size:   hdr.Size,
+					DiffID: layerDiffID,
 				}
 				if humanReadable {
 					fileInfo.HumanReadableSize = skiff.HumanReadableSize(hdr.Size)
@@ -232,7 +248,7 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.TabIndent)
 	defer w.Flush()
-	fmt.Fprintln(w, "FILE PATH\tSIZE\tLAYER ID")
+	fmt.Fprintln(w, "FILE PATH\tSIZE\tDIFF ID")
 
 	slices.Reverse(files)
 	for _, f := range files {
@@ -242,7 +258,12 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 		} else {
 			size = strconv.FormatInt(f.Size, 10)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", f.Path, size, f.Layer[:12])
+		// Show first 12 chars of diffID (digest.Digest.Encoded() gives us just the hex part)
+		diffIDDisplay := f.DiffID.Encoded()
+		if len(diffIDDisplay) > 12 {
+			diffIDDisplay = diffIDDisplay[:12]
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", f.Path, size, diffIDDisplay)
 	}
 	return nil
 }

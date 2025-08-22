@@ -121,13 +121,12 @@ func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri
 //
 // Returns a slice of BlobInfo containing layer information needed for
 // blob retrieval operations.
-func BlobInfoFromImage(ctx context.Context, img types.Image, sysCtx *types.SystemContext) ([]types.BlobInfo, error) {
+func BlobInfoFromImage(ctx context.Context, sysCtx *types.SystemContext, img types.Image) ([]types.BlobInfo, error) {
 	var layerInfos []types.BlobInfo
 
 	// For containers-storage transport, use LayerInfosForCopy to get storage-accessible digests
 	// For other transports (like docker), use LayerInfos which works fine
-	ref := img.Reference()
-	if ref.Transport().Name() == "containers-storage" {
+	if img.Reference().Transport().Name() == storageTransport.Transport.Name() {
 		imgSrc, err := img.Reference().NewImageSource(ctx, sysCtx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create image source for containers-storage transport: %w", err)
@@ -142,9 +141,7 @@ func BlobInfoFromImage(ctx context.Context, img types.Image, sysCtx *types.Syste
 		// Convert LayerInfo to BlobInfo for consistency
 		imgLayerInfos := img.LayerInfos()
 		layerInfos = make([]types.BlobInfo, len(imgLayerInfos))
-		for i, layer := range imgLayerInfos {
-			layerInfos[i] = layer
-		}
+		copy(layerInfos, imgLayerInfos)
 	}
 	return layerInfos, nil
 }

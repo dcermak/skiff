@@ -90,66 +90,60 @@ func TestFileHeap(t *testing.T) {
 }
 
 
-func TestGetFilteredLayers(t *testing.T) {
-	// Create test layers with proper digest format
-	layer1 := types.BlobInfo{Digest: digest.Digest("sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")}
-	layer2 := types.BlobInfo{Digest: digest.Digest("sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")}
-	layer3 := types.BlobInfo{Digest: digest.Digest("sha256:fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321")}
-	layer4 := types.BlobInfo{Digest: digest.Digest("sha256:1234567890bbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111")} // Same prefix as layer1
+func TestGetLayersByDiffID(t *testing.T) {
+	// Create test layers
+	layer1 := types.BlobInfo{Digest: digest.Digest("sha256:layer1digest")}
+	layer2 := types.BlobInfo{Digest: digest.Digest("sha256:layer2digest")}
+	layer3 := types.BlobInfo{Digest: digest.Digest("sha256:layer3digest")}
+	manifestLayers := []types.BlobInfo{layer1, layer2, layer3}
 
-	allLayers := []types.BlobInfo{layer1, layer2, layer3, layer4}
-	
-	// Create corresponding manifest layers (same digests for this test)
-	manifestLayers := []types.BlobInfo{layer1, layer2, layer3, layer4}
+	// Create test diffIDs
+	diffID1 := digest.Digest("sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
+	diffID2 := digest.Digest("sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
+	diffID3 := digest.Digest("sha256:fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321")
+	allDiffIDs := []digest.Digest{diffID1, diffID2, diffID3}
 
 	tests := []struct {
 		name          string
-		filterLayers  []string
+		filterDiffIDs []string
 		expectedCount int
 		expectError   bool
 		errorContains string
 	}{
 		{
 			name:          "no filters - return all layers",
-			filterLayers:  []string{},
-			expectedCount: 4,
+			filterDiffIDs: []string{},
+			expectedCount: 3,
 			expectError:   false,
 		},
 		{
-			name:          "filter by full digest",
-			filterLayers:  []string{"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"},
+			name:          "filter by full diffID",
+			filterDiffIDs: []string{"sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"},
 			expectedCount: 1,
 			expectError:   false,
 		},
 		{
-			name:          "filter by partial digest",
-			filterLayers:  []string{"1234567890abcdef"},
+			name:          "filter by partial diffID",
+			filterDiffIDs: []string{"1234567890abcdef"},
 			expectedCount: 1,
 			expectError:   false,
 		},
 		{
-			name:          "filter by non-existent layer",
-			filterLayers:  []string{"nonexistent"},
+			name:          "filter by non-existent diffID",
+			filterDiffIDs: []string{"nonexistent"},
 			expectedCount: 0,
 			expectError:   true,
-			errorContains: "layer nonexistent not found",
+			errorContains: "diffID nonexistent not found",
 		},
 		{
-			name:          "filter by ambiguous partial digest",
-			filterLayers:  []string{"1234567890"},
-			expectedCount: 0,
-			expectError:   true,
-			errorContains: "multiple layers match shortened digest",
-		},
-		{
-			name:          "filter by multiple layers",
-			filterLayers:  []string{"1234567890abcdef", "abcdef1234567890"},
+			name:          "filter by multiple diffIDs",
+			filterDiffIDs: []string{"1234567890abcdef", "abcdef1234567890"},
 			expectedCount: 2,
 			expectError:   false,
 		},
 		{
-			name:          "filter by duplicate layers",
-			filterLayers:  []string{"1234567890abcdef", "1234567890abcdef"},
+			name:          "filter by partial diffID - second layer",
+			filterDiffIDs: []string{"abcdef1234"},
 			expectedCount: 1,
 			expectError:   false,
 		},
@@ -157,7 +151,7 @@ func TestGetFilteredLayers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := getFilteredLayers(allLayers, manifestLayers, tt.filterLayers)
+			layers, diffIDs, err := getLayersByDiffID(manifestLayers, allDiffIDs, tt.filterDiffIDs)
 
 			if tt.expectError {
 				if err == nil {
@@ -175,19 +169,24 @@ func TestGetFilteredLayers(t *testing.T) {
 				return
 			}
 
-			if len(result) != tt.expectedCount {
-				t.Errorf("Expected %d layers, got %d", tt.expectedCount, len(result))
+			if len(layers) != tt.expectedCount {
+				t.Errorf("Expected %d layers, got %d", tt.expectedCount, len(layers))
+			}
+
+			if len(diffIDs) != tt.expectedCount {
+				t.Errorf("Expected %d diffIDs, got %d", tt.expectedCount, len(diffIDs))
 			}
 		})
 	}
 }
 
 func TestFileInfo(t *testing.T) {
+	diffID := digest.Digest("sha256:1234567890abcdef")
 	fileInfo := FileInfo{
 		Path:              "/test/file.txt",
 		Size:              1024,
 		HumanReadableSize: "1.0 kB",
-		Layer:             "sha256:1234567890abcdef",
+		DiffID:            diffID,
 	}
 
 	if fileInfo.Path != "/test/file.txt" {
@@ -202,7 +201,7 @@ func TestFileInfo(t *testing.T) {
 		t.Errorf("Expected human readable size '1.0 kB', got '%s'", fileInfo.HumanReadableSize)
 	}
 
-	if fileInfo.Layer != "sha256:1234567890abcdef" {
-		t.Errorf("Expected layer 'sha256:1234567890abcdef', got '%s'", fileInfo.Layer)
+	if fileInfo.DiffID != diffID {
+		t.Errorf("Expected diffID '%s', got '%s'", diffID, fileInfo.DiffID)
 	}
 }
