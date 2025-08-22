@@ -3,8 +3,10 @@ package skiff
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/containers/common/libimage"
+	storageTransport "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
 	"github.com/containers/storage"
@@ -32,6 +34,10 @@ func layersFromImageDigest(store storage.Store, digest digest.Digest) ([]storage
 			imgLayers = append(imgLayers, *curLayer)
 			parentLayerID = curLayer.Parent
 		}
+		// Important: we started inserting the topLayer, but the rest of
+		// the code expects layer[0] to be the bottom layer!!
+		slices.Reverse(imgLayers)
+
 		return imgLayers, nil
 	}
 	return nil, fmt.Errorf("Did not find image %s in the image store", digest)
@@ -51,8 +57,9 @@ func layersFromImageDigest(store storage.Store, digest digest.Digest) ([]storage
 func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri string) (types.Image, []storage.Layer, error) {
 	ref, err := alltransports.ParseImageName(uri)
 
-	// transport name missing => lookup in storage first:
-	if err != nil {
+	// transport name missing or its using the containers-storage
+	// => lookup in storage first:
+	if err != nil || ref.Transport().Name() == storageTransport.Transport.Name() {
 		opts, err := storage.DefaultStoreOptions()
 		if err != nil {
 			return nil, nil, err
@@ -142,4 +149,18 @@ func BlobInfoFromImage(img types.Image, ctx context.Context, sysCtx *types.Syste
 		}
 	}
 	return layerInfos, nil
+}
+
+// FormatDigest returns either the digest if `fullDigest` is `true` or the first
+// twelve characters of the hash/encoded value if `fullDigest` is `false`.
+func FormatDigest(digest digest.Digest, fullDigest bool) string {
+	if fullDigest {
+		return digest.String()
+	}
+
+	encoded := digest.Encoded()
+	if len(encoded) >= 12 {
+		return encoded[:12]
+	}
+	return encoded
 }
