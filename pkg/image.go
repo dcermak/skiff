@@ -150,3 +150,17 @@ func BlobInfoFromImage(img types.Image, ctx context.Context, sysCtx *types.Syste
 	}
 	return layerInfos, nil
 }
+
+// FormatDigest returns either the digest if `fullDigest` is `true` or the first
+// twelve characters of the hash/encoded value if `fullDigest` is `false`.
+func FormatDigest(digest digest.Digest, fullDigest bool) string {
+	if fullDigest {
+		return digest.String()
+	}
+
+	encoded := digest.Encoded()
+	if len(encoded) >= 12 {
+		return encoded[:12]
+	}
+	return encoded
+}

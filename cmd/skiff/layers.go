@@ -13,7 +13,7 @@ import (
 	skiff "github.com/dcermak/skiff/pkg"
 )
 
-func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string, output io.Writer) error {
+func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string, output io.Writer, fullDigest bool) error {
 	img, layers, err := skiff.ImageAndLayersFromURI(ctx, sysCtx, uri)
 	if err != nil {
 		return err
@@ -27,7 +27,7 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 	w := tabwriter.NewWriter(output, 0, 8, 2, ' ', 0)
 	defer w.Flush()
 
-	if layers != nil && len(layers) > 0 {
+	if len(layers) > 0 {
 		if len(inspect.LayersData) != len(layers) {
 			return fmt.Errorf(
 				"internal error: image inspect returned %d layers, storage returned %d layers",
@@ -37,7 +37,7 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 		}
 		fmt.Fprintln(w, "Diff ID\tUncompressed Size")
 		for _, l := range layers {
-			fmt.Fprintf(w, "%s\t%d\n", l.UncompressedDigest, l.UncompressedSize)
+			fmt.Fprintf(w, "%s\t%d\n", skiff.FormatDigest(l.UncompressedDigest, fullDigest), l.UncompressedSize)
 		}
 
 	} else {
@@ -55,12 +55,12 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 		if len(diffIDs) == len(inspect.LayersData) {
 			fmt.Fprintln(w, "Diff ID\tCompressed Size")
 			for i, l := range inspect.LayersData {
-				fmt.Fprintf(w, "%s\t%d\n", conf.RootFS.DiffIDs[i], l.Size)
+				fmt.Fprintf(w, "%s\t%d\n", skiff.FormatDigest(conf.RootFS.DiffIDs[i], fullDigest), l.Size)
 			}
 		} else {
 			fmt.Fprintln(w, "Compressed Digest\tCompressed Size")
 			for _, l := range inspect.LayersData {
-				fmt.Fprintf(w, "%s\t%d\n", l.Digest, l.Size)
+				fmt.Fprintf(w, "%s\t%d\n", skiff.FormatDigest(l.Digest, fullDigest), l.Size)
 			}
 		}
 	}
@@ -71,6 +71,12 @@ var LayerUsage cli.Command = cli.Command{
 	Name:      "layers",
 	Usage:     "Print the size of each layer in an image.",
 	Arguments: []cli.Argument{&cli.StringArg{Name: "url", UsageText: "Image reference (e.g., registry.example.com/image:tag)"}},
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:    "full-digest",
+			Usage:   "Show full digests instead of truncated (12 chars)",
+			Aliases: []string{"full-diff-id"}},
+	},
 	Action: func(ctx context.Context, c *cli.Command) error {
 		url := c.StringArg("url")
 		if url == "" {
@@ -78,6 +84,6 @@ var LayerUsage cli.Command = cli.Command{
 		}
 
 		sysCtx := types.SystemContext{}
-		return ShowLayerUsage(ctx, &sysCtx, url, c.Writer)
+		return ShowLayerUsage(ctx, &sysCtx, url, c.Writer, c.Bool("full-digest"))
 	},
 }
