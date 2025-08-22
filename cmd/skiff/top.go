@@ -151,18 +151,9 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 	}
 
 	// Get image config to access diffIDs
-	configBlob, err := img.ConfigBlob(ctx)
+	config, err := img.OCIConfig(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get config blob: %w", err)
-	}
-
-	var config struct {
-		RootFS struct {
-			DiffIDs []string `json:"diff_ids"`
-		} `json:"rootfs"`
-	}
-	if err := json.Unmarshal(configBlob, &config); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
+		return fmt.Errorf("failed to get OCI config: %w", err)
 	}
 
 	// Parse diffIDs from config into digest.Digest slice
@@ -259,6 +250,7 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 			size = strconv.FormatInt(f.Size, 10)
 		}
 		// Show first 12 chars of diffID (digest.Digest.Encoded() gives us just the hex part)
+		// TODO(dcermak) switch to skiff.FormatDigest(f.DiffID, false)
 		diffIDDisplay := f.DiffID.Encoded()
 		if len(diffIDDisplay) > 12 {
 			diffIDDisplay = diffIDDisplay[:12]

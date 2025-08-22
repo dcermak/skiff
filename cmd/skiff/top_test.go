@@ -179,29 +179,3 @@ func TestGetLayersByDiffID(t *testing.T) {
 		})
 	}
 }
-
-func TestFileInfo(t *testing.T) {
-	diffID := digest.Digest("sha256:1234567890abcdef")
-	fileInfo := FileInfo{
-		Path:              "/test/file.txt",
-		Size:              1024,
-		HumanReadableSize: "1.0 kB",
-		DiffID:            diffID,
-	}
-
-	if fileInfo.Path != "/test/file.txt" {
-		t.Errorf("Expected path '/test/file.txt', got '%s'", fileInfo.Path)
-	}
-
-	if fileInfo.Size != 1024 {
-		t.Errorf("Expected size 1024, got %d", fileInfo.Size)
-	}
-
-	if fileInfo.HumanReadableSize != "1.0 kB" {
-		t.Errorf("Expected human readable size '1.0 kB', got '%s'", fileInfo.HumanReadableSize)
-	}
-
-	if fileInfo.DiffID != diffID {
-		t.Errorf("Expected diffID '%s', got '%s'", diffID, fileInfo.DiffID)
-	}
-}
