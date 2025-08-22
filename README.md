@@ -9,6 +9,8 @@ A simple OCI image analysis utility, helping you uncover what consumes so much d
 git clone https://github.com/dcermak/skiff
 cd skiff
 make binaries
+# optional: system wide installation
+cp .bin/skiff /usr/local/bin/skiff
 ```
 
 ## Usage
