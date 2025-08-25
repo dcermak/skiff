@@ -105,3 +105,30 @@ def step_impl(context):
         raise AssertionError(
             f"Stdout doesn't equal:\n{expected}\n\nActual stdout:\n{found}"
         )
+
+
+@behave.step('stdout contains "{text}"')
+def step_impl(context, text):
+    found = context.cmd_stdout.rstrip()
+    if text not in found:
+        raise AssertionError(
+            f'Stdout does not contain expected text:\n{text}\n\nActual stdout:\n{found}'
+        )
+
+@behave.step('stdout does not contain "{text}"')
+def step_impl(context, text):
+    found = context.cmd_stdout.rstrip()
+    if text in found:
+        raise AssertionError(
+            f'Stdout contains unexpected text:\n{text}\n\nActual stdout:\n{found}'
+        )
+
+@behave.step("stdout does not contain")
+def step_impl(context):
+    expected = context.text.format(context=context).rstrip()
+    found = context.cmd_stdout.rstrip()
+
+    if expected in found:
+        raise AssertionError(
+            f"Stdout contains unexpected text:\n{expected}\n\nActual stdout:\n{found}"
+        )
