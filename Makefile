@@ -1,4 +1,4 @@
-.PHONY: binaries, vendor, unit-tests, behave
+.PHONY: binaries vendor unit-tests behave
 
 # Build the binaries
 binaries:

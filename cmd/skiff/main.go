@@ -13,13 +13,6 @@ import (
 )
 
 func main() {
-	// Customize the help flag to only use --help, not -h
-	// -h is used for --human-readable
-	cli.HelpFlag = &cli.BoolFlag{
-		Name:  "help",
-		Usage: "show help",
-	}
-
 	cmd := &cli.Command{
 		Name:  "skiff",
 		Usage: "Analyze the disk usage and directory structure of OCI images and its layers",
