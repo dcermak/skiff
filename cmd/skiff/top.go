@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"container/heap"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -38,7 +37,7 @@ var topCommand = cli.Command{
 		&cli.StringSliceFlag{
 			Name:    "layer",
 			Usage:   "Filter results to specific layer(s) by diffID (uncompressed SHA256). If not specified, all layers are included (not an empty result).",
-			Aliases: []string{"l"},
+			Aliases: []string{"l", "diff-id"},
 		},
 	},
 	Arguments: []cli.Argument{
@@ -94,9 +93,7 @@ func (h *FileHeap) Pop() interface{} {
 func getLayersByDiffID(manifestLayers []types.BlobInfo, allDiffIDs []digest.Digest, filterDiffIDs []string) ([]types.BlobInfo, []digest.Digest, error) {
 	// If no filtering, return all layers with all their diffIDs
 	if len(filterDiffIDs) == 0 {
-		allBlobInfos := make([]types.BlobInfo, len(manifestLayers))
-		copy(allBlobInfos, manifestLayers)
-		return allBlobInfos, allDiffIDs, nil
+		return manifestLayers, allDiffIDs, nil
 	}
 
 	// Filter layers by user-provided diffIDs
@@ -141,29 +138,23 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 	}
 	defer imgSrc.Close()
 
-	h := &FileHeap{}
-	heap.Init(h)
-
 	// Get transport-specific layer blob infos
 	manifestLayers, err := skiff.BlobInfoFromImage(ctx, sysCtx, img)
 	if err != nil {
 		return fmt.Errorf("failed to get blob info from image: %w", err)
 	}
 
-	// Get image config to access diffIDs
-	config, err := img.OCIConfig(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get OCI config: %w", err)
+	conf, err := img.OCIConfig(ctx)
+	allDiffIDs := []digest.Digest{}
+
+	// only get them if the rootfs type is correct
+	if err == nil && conf != nil && conf.RootFS.Type == "layers" {
+		allDiffIDs = conf.RootFS.DiffIDs
 	}
 
-	// Parse diffIDs from config into digest.Digest slice
-	allDiffIDs := make([]digest.Digest, len(config.RootFS.DiffIDs))
-	for i, diffIDStr := range config.RootFS.DiffIDs {
-		diffID, err := digest.Parse(diffIDStr)
-		if err != nil {
-			return fmt.Errorf("failed to parse diffID %s: %w", diffIDStr, err)
-		}
-		allDiffIDs[i] = diffID
+	// Check that manifestLayers and allDiffIDs have matching lengths
+	if len(manifestLayers) != len(allDiffIDs) {
+		return fmt.Errorf("manifestLayers (%d) and allDiffIDs (%d) length mismatch", len(manifestLayers), len(allDiffIDs))
 	}
 
 	// Get filtered layers and their diffIDs using the refactored function
@@ -171,6 +162,9 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 	if err != nil {
 		return err
 	}
+
+	h := &FileHeap{}
+	heap.Init(h)
 
 	for i, layer := range layerInfos {
 		blob, _, err := imgSrc.GetBlob(context.Background(), layer, none.NoCache)
@@ -186,13 +180,7 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 		defer uncompressedStream.Close()
 
 		// Get the diffID for this layer
-		var layerDiffID digest.Digest
-		if i < len(diffIDs) {
-			layerDiffID = diffIDs[i]
-		} else {
-			// TODO(danishprakash): error out if arrays mismatch or let it continue
-			layerDiffID = "sha256:unknown"
-		}
+		layerDiffID := diffIDs[i]
 
 		tr := tar.NewReader(uncompressedStream)
 		for {
