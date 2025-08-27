@@ -156,7 +156,7 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 		return fmt.Errorf("manifestLayers (%d) and allDiffIDs (%d) length mismatch", len(manifestLayers), len(allDiffIDs))
 	}
 
-	// Get filtered layers and their diffIDs using the refactored function
+	// Get filtered layers and their diffIDs
 	layerInfos, diffIDs, err := getLayersByDiffID(manifestLayers, allDiffIDs, layers)
 	if err != nil {
 		return err
