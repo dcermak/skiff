@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="skiff.png" width="35%" alt="skiff">
+  <img src="skiff-logo.svg" width="35%" alt="skiff">
 </div>
 
 # skiff - OCI image analysis utility
@@ -24,8 +24,9 @@ Print the size of each layer in an image.
 **Usage:**
 ```bash
 $ skiff layers registry.suse.com/bci/python@sha256:677b52cc1d587ff72430f1b607343a3d1f88b15a9bbd999601554ff303d6774f
-sha256:abb83fe2605d91490ec6d6812c2fec309feb463e4359f8f971428bb560c38af1 47480531 378c0b02df2b31ed2e39d2e7026571287f1c57f4ecfd631a285381eeb0e7894c 129486336
-sha256:dbdff6b3e29778a160277784fbcfc864cf1e0c6df77edbac2bafb777c16b77b6 46534194 4672d0cba723f1a9a7b91c1e06f5d8801a076b1bdf4990806cdaabcd53992738 125604864
+Diff ID       Uncompressed Size
+4672d0cba723  125604864
+88304527ded0  129486336
 ```
 
 ### `skiff top`
