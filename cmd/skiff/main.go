@@ -13,7 +13,6 @@ import (
 )
 
 func main() {
-
 	cmd := &cli.Command{
 		Name:  "skiff",
 		Usage: "Analyze the disk usage and directory structure of OCI images and its layers",
