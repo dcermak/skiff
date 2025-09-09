@@ -28,7 +28,7 @@ jobs:
           sudo apt install libbtrfs-dev libgpgme-dev
 
       - name: set up go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
