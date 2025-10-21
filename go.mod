@@ -10,7 +10,7 @@ require (
 	github.com/containers/storage v1.59.1
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/syndtr/gocapability v0.0.0-20200815063812-42c35b437635
-	github.com/urfave/cli/v3 v3.4.1
+	github.com/urfave/cli/v3 v3.5.0
 )
 
 require (
