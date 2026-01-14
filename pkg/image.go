@@ -75,8 +75,6 @@ func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri
 		}
 
 		img, _, err := runtime.LookupImage(uri, nil)
-
-		// found the image in store => exit
 		if err == nil {
 			ref, err := img.StorageReference()
 			if err != nil {
@@ -123,13 +121,12 @@ func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri
 //
 // Returns a slice of BlobInfo containing layer information needed for
 // blob retrieval operations.
-func BlobInfoFromImage(img types.Image, ctx context.Context, sysCtx *types.SystemContext) ([]types.BlobInfo, error) {
+func BlobInfoFromImage(ctx context.Context, sysCtx *types.SystemContext, img types.Image) ([]types.BlobInfo, error) {
 	var layerInfos []types.BlobInfo
 
 	// For containers-storage transport, use LayerInfosForCopy to get storage-accessible digests
 	// For other transports (like docker), use LayerInfos which works fine
-	ref := img.Reference()
-	if ref.Transport().Name() == "containers-storage" {
+	if img.Reference().Transport().Name() == storageTransport.Transport.Name() {
 		imgSrc, err := img.Reference().NewImageSource(ctx, sysCtx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create image source for containers-storage transport: %w", err)
@@ -144,9 +141,7 @@ func BlobInfoFromImage(img types.Image, ctx context.Context, sysCtx *types.Syste
 		// Convert LayerInfo to BlobInfo for consistency
 		imgLayerInfos := img.LayerInfos()
 		layerInfos = make([]types.BlobInfo, len(imgLayerInfos))
-		for i, layer := range imgLayerInfos {
-			layerInfos[i] = layer
-		}
+		copy(layerInfos, imgLayerInfos)
 	}
 	return layerInfos, nil
 }
@@ -163,4 +158,20 @@ func FormatDigest(digest digest.Digest, fullDigest bool) string {
 		return encoded[:12]
 	}
 	return encoded
+}
+
+// HumanReadableSize converts a byte count to a human readable string
+// From https://yourbasic.org/golang/formatting-byte-size-to-human-readable-format/
+func HumanReadableSize(b int64) string {
+	const unit = 1000
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB",
+		float64(b)/float64(div), "kMGTPE"[exp])
 }

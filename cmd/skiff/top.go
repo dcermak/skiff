@@ -6,25 +6,38 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/containers/image/v5/pkg/blobinfocache/none"
 	"github.com/containers/image/v5/pkg/compression"
 	"github.com/containers/image/v5/types"
+	"github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v3"
 
 	skiff "github.com/dcermak/skiff/pkg"
 )
 
 var topCommand = cli.Command{
-	Name:  "top",
-	Usage: "Analyze a container image and list files by size",
+	Name:      "top",
+	Usage:     "Analyze a container image and list files by size",
+	ArgsUsage: "[image]",
 	Flags: []cli.Flag{
 		&cli.BoolFlag{Name: "include-pseudo", Usage: "Include pseudo-filesystems (/dev, /proc, /sys)"},
 		&cli.BoolFlag{Name: "follow-symlinks", Usage: "Follow symbolic links"},
+		&cli.BoolFlag{
+			Name:  "human-readable",
+			Usage: "Show file sizes in human readable format",
+		},
+		&cli.StringSliceFlag{
+			Name:    "layer",
+			Usage:   "Filter results to specific layer(s) by diffID (uncompressed SHA256). If not specified, all layers are included (not an empty result).",
+			Aliases: []string{"l", "diff-id"},
+		},
 	},
 	Arguments: []cli.Argument{
 		&cli.StringArg{Name: "image", UsageText: "Container image ref"},
@@ -35,17 +48,25 @@ var topCommand = cli.Command{
 			return fmt.Errorf("image URL is required")
 		}
 
+		humanReadable := c.Bool("human-readable")
+		layers := c.StringSlice("layer")
+		if c.IsSet("layer") && len(layers) == 0 {
+			return fmt.Errorf("--layer flag provided but no diffID specified; please provide at least one diffID")
+		}
+
 		sysCtx := types.SystemContext{}
-		return analyzeLayers(image, ctx, &sysCtx)
+
+		return analyzeLayers(ctx, &sysCtx, image, layers, humanReadable)
 	},
 }
 
 const defaultFileLimit = 10
 
 type FileInfo struct {
-	Path  string
-	Size  int64
-	Layer string // layer ID this file belongs to
+	Path              string
+	Size              int64
+	HumanReadableSize string
+	DiffID            digest.Digest // diffID of the layer this file belongs to
 }
 
 type FileHeap []FileInfo
@@ -66,31 +87,85 @@ func (h *FileHeap) Pop() interface{} {
 	return item
 }
 
+// getLayersByDiffID returns layer blob infos filtered by user-provided diffIDs
+// by looking up diffIDs and mapping to manifest layers
+func getLayersByDiffID(manifestLayers []types.BlobInfo, allDiffIDs []digest.Digest, filterDiffIDs []string) ([]types.BlobInfo, []digest.Digest, error) {
+	// If no filtering, return all layers with all their diffIDs
+	if len(filterDiffIDs) == 0 {
+		return manifestLayers, allDiffIDs, nil
+	}
+
+	// Filter layers by user-provided diffIDs
+	var filteredLayers []types.BlobInfo
+	var filteredDiffIDs []digest.Digest
+
+	// Map user diffIDs to layer indices
+	for _, userDiffID := range filterDiffIDs {
+		found := false
+		for i, configDiffID := range allDiffIDs {
+			// Match full diffID or prefix
+			if configDiffID.String() == userDiffID || strings.HasPrefix(configDiffID.Encoded(), userDiffID) {
+				if i < len(manifestLayers) {
+					filteredLayers = append(filteredLayers, manifestLayers[i])
+					filteredDiffIDs = append(filteredDiffIDs, configDiffID)
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return nil, nil, fmt.Errorf("diffID %s not found in image", userDiffID)
+		}
+	}
+
+	return filteredLayers, filteredDiffIDs, nil
+}
+
 // analyzeLayers fetches layers for a given image reference
 // reads the associated layer archives and lists file info
-func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext) error {
+func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string, layers []string, humanReadable bool) error {
+	// represents an image from any transport (docker://, containers-storage://, etc.)
 	img, _, err := skiff.ImageAndLayersFromURI(ctx, sysCtx, uri)
 	if err != nil {
 		return err
 	}
 
+	// image source that helps us fetch layers to eventually show files from the stream
 	imgSrc, err := img.Reference().NewImageSource(ctx, sysCtx)
 	if err != nil {
 		return err
 	}
 	defer imgSrc.Close()
 
-	h := &FileHeap{}
-	heap.Init(h)
+	// Get transport-specific layer blob infos
+	manifestLayers, err := skiff.BlobInfoFromImage(ctx, sysCtx, img)
+	if err != nil {
+		return fmt.Errorf("failed to get blob info from image: %w", err)
+	}
 
-	files := make([]FileInfo, h.Len())
+	conf, err := img.OCIConfig(ctx)
+	allDiffIDs := []digest.Digest{}
 
-	layerInfos, err := skiff.BlobInfoFromImage(img, ctx, sysCtx)
+	// only get them if the rootfs type is correct
+	if err == nil && conf != nil && conf.RootFS.Type == "layers" {
+		allDiffIDs = conf.RootFS.DiffIDs
+	}
+
+	// Check that manifestLayers and allDiffIDs have matching lengths
+	if len(manifestLayers) != len(allDiffIDs) {
+		return fmt.Errorf("manifestLayers (%d) and allDiffIDs (%d) length mismatch", len(manifestLayers), len(allDiffIDs))
+	}
+
+	// Get filtered layers and their diffIDs
+	layerInfos, diffIDs, err := getLayersByDiffID(manifestLayers, allDiffIDs, layers)
 	if err != nil {
 		return err
 	}
 
-	for _, layer := range layerInfos {
+	h := &FileHeap{}
+	heap.Init(h)
+
+	for i, layer := range layerInfos {
 		blob, _, err := imgSrc.GetBlob(context.Background(), layer, none.NoCache)
 		if err != nil {
 			return err
@@ -103,6 +178,9 @@ func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext)
 		}
 		defer uncompressedStream.Close()
 
+		// Get the diffID for this layer
+		layerDiffID := diffIDs[i]
+
 		tr := tar.NewReader(uncompressedStream)
 		for {
 			hdr, err := tr.Next()
@@ -113,48 +191,58 @@ func analyzeLayers(uri string, ctx context.Context, sysCtx *types.SystemContext)
 				return fmt.Errorf("failed to read tar header: %w", err)
 			}
 
-			// TODO: follow symlinks
+			// TODO(danishprakash): follow symlinks
 			// if hdr.Typeflag == tar.TypeSymlink
 
 			path, err := filepath.Abs(filepath.Join("/", hdr.Name))
 			if err != nil {
-				// TODO: perhaps just log and not error out
-				return fmt.Errorf("error generating absolute representation of path: %w", err)
+				// Log the error but continue processing other files
+				fmt.Fprintf(os.Stderr, "warning: error generating absolute representation of path %s: %v\n", hdr.Name, err)
+				continue
 			}
 
 			if hdr.Typeflag == tar.TypeReg {
-				heap.Push(h, FileInfo{Path: path, Size: hdr.Size, Layer: layer.Digest.Encoded()})
+				fileInfo := FileInfo{
+					Path:   path,
+					Size:   hdr.Size,
+					DiffID: layerDiffID,
+				}
+				if humanReadable {
+					fileInfo.HumanReadableSize = skiff.HumanReadableSize(hdr.Size)
+				}
+				heap.Push(h, fileInfo)
 				if h.Len() > defaultFileLimit {
 					heap.Pop(h)
 				}
 			}
 		}
-
 	}
 
-	for i := 0; h.Len() > 0; i++ {
+	// Extract files from heap in reverse order (largest first)
+	var files []FileInfo
+	for h.Len() > 0 {
 		files = append(files, heap.Pop(h).(FileInfo))
 	}
 
-	maxPathLen, maxSizeLen, maxLayerLen := 0, 0, 12
-	for _, f := range files {
-		if len(f.Path) > maxPathLen {
-			maxPathLen = len(f.Path)
-		}
-		sizeStr := strconv.FormatInt(f.Size, 10)
-		if len(sizeStr) > maxSizeLen {
-			maxSizeLen = len(sizeStr)
-		}
-	}
-
-	fmt.Printf("%-*s	%*s	%s\n", maxPathLen, "File Path", maxSizeLen, "Size", "Layer ID")
-	fmt.Println(strings.Repeat("-", maxPathLen+maxSizeLen+maxLayerLen+15)) // also consider two tab chars
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.TabIndent)
+	defer w.Flush()
+	fmt.Fprintln(w, "FILE PATH\tSIZE\tDIFF ID")
 
 	slices.Reverse(files)
 	for _, f := range files {
-		sizeStr := strconv.FormatInt(f.Size, 10)
-		fmt.Printf("%-*s	%*s	%-*s\n", maxPathLen, f.Path, maxSizeLen, sizeStr, maxLayerLen, f.Layer[:12])
+		var size string
+		if humanReadable {
+			size = f.HumanReadableSize
+		} else {
+			size = strconv.FormatInt(f.Size, 10)
+		}
+		// Show first 12 chars of diffID (digest.Digest.Encoded() gives us just the hex part)
+		// TODO(dcermak) switch to skiff.FormatDigest(f.DiffID, false)
+		diffIDDisplay := f.DiffID.Encoded()
+		if len(diffIDDisplay) > 12 {
+			diffIDDisplay = diffIDDisplay[:12]
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", f.Path, size, diffIDDisplay)
 	}
-
 	return nil
 }

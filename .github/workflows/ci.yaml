@@ -44,3 +44,7 @@ jobs:
       - name: build
         run: make binaries
         working-directory: .
+
+      - name: test
+        run: make unit-tests
+        working-directory: .
