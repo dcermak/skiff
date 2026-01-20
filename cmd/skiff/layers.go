@@ -73,9 +73,11 @@ var LayerUsage cli.Command = cli.Command{
 	Arguments: []cli.Argument{&cli.StringArg{Name: "url", UsageText: "Image reference (e.g., registry.example.com/image:tag)"}},
 	Flags: []cli.Flag{
 		&cli.BoolFlag{
-			Name:    "full-digest",
-			Usage:   "Show full digests instead of truncated (12 chars)",
-			Aliases: []string{"full-diff-id"}},
+			Name:        "full-digest",
+			Usage:       "Show full digests instead of truncated (12 chars)",
+			Aliases:     []string{"full-diff-id"},
+			DefaultText: "false",
+		},
 	},
 	Action: func(ctx context.Context, c *cli.Command) error {
 		url := c.StringArg("url")
