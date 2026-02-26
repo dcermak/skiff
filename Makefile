@@ -4,9 +4,12 @@
 binaries:
 	go build -o bin/skiff ./cmd/skiff
 
+test-image:
+	cd pkg; buildah bud --layers -t skiff-test-image -f TestImage.containerfile .
+
 # Run unit tests
-unit-tests:
-	go test -v ./cmd/skiff/...
+unit-tests: test-image
+	go test -v ./...
 
 # Run behave tests
 behave:
