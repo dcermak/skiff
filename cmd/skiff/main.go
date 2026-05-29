@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/containers/storage/pkg/reexec"
-	"github.com/containers/storage/pkg/unshare"
 	"github.com/syndtr/gocapability/capability"
+	"go.podman.io/storage/pkg/reexec"
+	"go.podman.io/storage/pkg/unshare"
 
 	"github.com/urfave/cli/v3"
 )

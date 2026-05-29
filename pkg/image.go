@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/containers/common/libimage"
-	storageTransport "github.com/containers/image/v5/storage"
-	"github.com/containers/image/v5/transports/alltransports"
-	"github.com/containers/image/v5/types"
-	"github.com/containers/storage"
 	"github.com/opencontainers/go-digest"
+	"go.podman.io/common/libimage"
+	storageTransport "go.podman.io/image/v5/storage"
+	"go.podman.io/image/v5/transports/alltransports"
+	"go.podman.io/image/v5/types"
+	"go.podman.io/storage"
 )
 
 func layersFromImageDigest(store storage.Store, digest digest.Digest) ([]storage.Layer, error) {

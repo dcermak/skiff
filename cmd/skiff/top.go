@@ -13,11 +13,11 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/containers/image/v5/pkg/blobinfocache/none"
-	"github.com/containers/image/v5/pkg/compression"
-	"github.com/containers/image/v5/types"
 	"github.com/opencontainers/go-digest"
 	"github.com/urfave/cli/v3"
+	"go.podman.io/image/v5/pkg/blobinfocache/none"
+	"go.podman.io/image/v5/pkg/compression"
+	"go.podman.io/image/v5/types"
 
 	skiff "github.com/dcermak/skiff/pkg"
 )
