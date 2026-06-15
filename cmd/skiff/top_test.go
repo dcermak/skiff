@@ -6,8 +6,8 @@ import (
 
 	"container/heap"
 
-	"github.com/containers/image/v5/types"
 	"github.com/opencontainers/go-digest"
+	"go.podman.io/image/v5/types"
 
 	skiff "github.com/dcermak/skiff/pkg"
 )
@@ -88,7 +88,6 @@ func TestFileHeap(t *testing.T) {
 		t.Errorf("Expected empty heap after all pops, got length %d", h.Len())
 	}
 }
-
 
 func TestGetLayersByDiffID(t *testing.T) {
 	// Create test layers

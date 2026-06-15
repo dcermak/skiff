@@ -58,5 +58,7 @@ jobs:
       - name: Build skiff binary
         run: make binaries
 
+      - run: echo "" | sudo tee /etc/containers/registries.conf
+
       - name: Run behave tests
         run: python -m behave features/
