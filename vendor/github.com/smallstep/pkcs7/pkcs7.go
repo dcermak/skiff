@@ -12,7 +12,6 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"sync"
 
@@ -27,13 +26,7 @@ type PKCS7 struct {
 	Certificates []*x509.Certificate
 	CRLs         []pkix.CertificateList
 	Signers      []signerInfo
-	Hasher       Hasher
 	raw          interface{}
-}
-
-// Hasher is an interface defining a custom hash calculator.
-type Hasher interface {
-	Hash(crypto.Hash, io.Reader) ([]byte, error)
 }
 
 type contentInfo struct {
