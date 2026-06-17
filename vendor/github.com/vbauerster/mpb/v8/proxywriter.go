@@ -5,72 +5,92 @@ import (
 	"time"
 )
 
-type proxyWriteCloser struct {
-	w   io.Writer
+type proxyWriter struct {
+	io.WriteCloser
 	bar *Bar
 }
 
-func (x proxyWriteCloser) Write(p []byte) (int, error) {
-	n, err := x.w.Write(p)
+func (x proxyWriter) Write(p []byte) (int, error) {
+	n, err := x.WriteCloser.Write(p)
 	x.bar.IncrBy(n)
 	return n, err
 }
 
-func (x proxyWriteCloser) Close() error {
-	if wc, ok := x.w.(io.WriteCloser); ok {
-		return wc.Close()
-	}
-	return nil
-}
-
 type proxyReaderFrom struct {
-	proxyWriteCloser
-	rf io.ReaderFrom
+	proxyWriter
 }
 
 func (x proxyReaderFrom) ReadFrom(r io.Reader) (int64, error) {
-	return x.rf.ReadFrom(proxyReadCloser{r, x.bar})
+	n, err := x.WriteCloser.(io.ReaderFrom).ReadFrom(r)
+	x.bar.IncrInt64(n)
+	return n, err
 }
 
-type ewmaProxyWriteCloser struct {
-	w   io.Writer
+type ewmaProxyWriter struct {
+	io.WriteCloser
 	bar *Bar
 }
 
-func (x ewmaProxyWriteCloser) Write(p []byte) (int, error) {
+func (x ewmaProxyWriter) Write(p []byte) (int, error) {
 	start := time.Now()
-	n, err := x.w.Write(p)
+	n, err := x.WriteCloser.Write(p)
 	x.bar.EwmaIncrBy(n, time.Since(start))
 	return n, err
 }
 
-func (x ewmaProxyWriteCloser) Close() error {
-	if wc, ok := x.w.(io.WriteCloser); ok {
-		return wc.Close()
-	}
-	return nil
-}
-
 type ewmaProxyReaderFrom struct {
-	ewmaProxyWriteCloser
-	rf io.ReaderFrom
+	ewmaProxyWriter
 }
 
 func (x ewmaProxyReaderFrom) ReadFrom(r io.Reader) (int64, error) {
-	return x.rf.ReadFrom(ewmaProxyReadCloser{r, x.bar})
+	start := time.Now()
+	n, err := x.WriteCloser.(io.ReaderFrom).ReadFrom(r)
+	x.bar.EwmaIncrInt64(n, time.Since(start))
+	return n, err
 }
 
 func newProxyWriter(w io.Writer, b *Bar, hasEwma bool) io.WriteCloser {
+	wc := toWriteCloser(w)
 	if hasEwma {
-		epw := ewmaProxyWriteCloser{w, b}
-		if rf, ok := w.(io.ReaderFrom); ok {
-			return ewmaProxyReaderFrom{epw, rf}
+		epw := ewmaProxyWriter{wc, b}
+		if _, ok := w.(io.ReaderFrom); ok {
+			return ewmaProxyReaderFrom{epw}
 		}
 		return epw
 	}
-	pw := proxyWriteCloser{w, b}
-	if rf, ok := w.(io.ReaderFrom); ok {
-		return proxyReaderFrom{pw, rf}
+	pw := proxyWriter{wc, b}
+	if _, ok := w.(io.ReaderFrom); ok {
+		return proxyReaderFrom{pw}
 	}
 	return pw
+}
+
+func toWriteCloser(w io.Writer) io.WriteCloser {
+	if wc, ok := w.(io.WriteCloser); ok {
+		return wc
+	}
+	return toNopWriteCloser(w)
+}
+
+func toNopWriteCloser(w io.Writer) io.WriteCloser {
+	if _, ok := w.(io.ReaderFrom); ok {
+		return nopWriteCloserReaderFrom{w}
+	}
+	return nopWriteCloser{w}
+}
+
+type nopWriteCloser struct {
+	io.Writer
+}
+
+func (nopWriteCloser) Close() error { return nil }
+
+type nopWriteCloserReaderFrom struct {
+	io.Writer
+}
+
+func (nopWriteCloserReaderFrom) Close() error { return nil }
+
+func (c nopWriteCloserReaderFrom) ReadFrom(r io.Reader) (int64, error) {
+	return c.Writer.(io.ReaderFrom).ReadFrom(r)
 }
