@@ -18,6 +18,7 @@ func ShowLayerUsage(ctx context.Context, sysCtx *types.SystemContext, uri string
 	if err != nil {
 		return err
 	}
+	defer img.Close()
 
 	inspect, err := img.Inspect(ctx)
 	if err != nil {
