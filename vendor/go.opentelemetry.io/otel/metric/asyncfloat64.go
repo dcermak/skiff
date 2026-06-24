@@ -51,9 +51,6 @@ type Float64ObservableCounterConfig struct {
 func NewFloat64ObservableCounterConfig(opts ...Float64ObservableCounterOption) Float64ObservableCounterConfig {
 	var config Float64ObservableCounterConfig
 	for _, o := range opts {
-		if _, ok := o.(experimentalOption); ok {
-			continue
-		}
 		config = o.applyFloat64ObservableCounter(config)
 	}
 	return config
@@ -114,9 +111,6 @@ func NewFloat64ObservableUpDownCounterConfig(
 ) Float64ObservableUpDownCounterConfig {
 	var config Float64ObservableUpDownCounterConfig
 	for _, o := range opts {
-		if _, ok := o.(experimentalOption); ok {
-			continue
-		}
 		config = o.applyFloat64ObservableUpDownCounter(config)
 	}
 	return config
@@ -174,9 +168,6 @@ type Float64ObservableGaugeConfig struct {
 func NewFloat64ObservableGaugeConfig(opts ...Float64ObservableGaugeOption) Float64ObservableGaugeConfig {
 	var config Float64ObservableGaugeConfig
 	for _, o := range opts {
-		if _, ok := o.(experimentalOption); ok {
-			continue
-		}
 		config = o.applyFloat64ObservableGauge(config)
 	}
 	return config
@@ -220,9 +211,6 @@ type Float64Observer interface {
 	//
 	// Use the WithAttributeSet (or, if performance is not a concern,
 	// the WithAttributes) option to include measurement attributes.
-	//
-	// Implementations of this method need to be safe for a user to call
-	// concurrently.
 	Observe(value float64, options ...ObserveOption)
 }
 
@@ -239,11 +227,7 @@ type Float64Observer interface {
 // attributes as another Float64Callbacks also registered for the same
 // instrument.
 //
-// The function needs to be reentrant and concurrent safe.
-//
-// Note that Go's mutexes are not reentrant, and locking a mutex takes
-// an indefinite amount of time. It is therefore advised to avoid
-// using mutexes inside callbacks.
+// The function needs to be concurrent safe.
 type Float64Callback func(context.Context, Float64Observer) error
 
 // Float64ObservableOption applies options to float64 Observer instruments.

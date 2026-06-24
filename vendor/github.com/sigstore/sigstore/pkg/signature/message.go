@@ -21,14 +21,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 )
 
 func isSupportedAlg(alg crypto.Hash, supportedAlgs []crypto.Hash) bool {
 	if supportedAlgs == nil {
 		return true
 	}
-	return slices.Contains(supportedAlgs, alg)
+	for _, supportedAlg := range supportedAlgs {
+		if alg == supportedAlg {
+			return true
+		}
+	}
+	return false
 }
 
 // ComputeDigestForSigning calculates the digest value for the specified message using a hash function selected by the following process:
@@ -51,10 +55,10 @@ func ComputeDigestForSigning(rawMessage io.Reader, defaultHashFunc crypto.Hash, 
 		if hashedWith != crypto.Hash(0) && len(digest) != hashedWith.Size() {
 			err = errors.New("unexpected length of digest for hash function specified")
 		}
-		return digest, hashedWith, err
+		return
 	}
 	digest, err = hashMessage(rawMessage, hashedWith)
-	return digest, hashedWith, err
+	return
 }
 
 // ComputeDigestForVerifying calculates the digest value for the specified message using a hash function selected by the following process:
@@ -77,10 +81,10 @@ func ComputeDigestForVerifying(rawMessage io.Reader, defaultHashFunc crypto.Hash
 		if hashedWith != crypto.Hash(0) && len(digest) != hashedWith.Size() {
 			err = errors.New("unexpected length of digest for hash function specified")
 		}
-		return digest, hashedWith, err
+		return
 	}
 	digest, err = hashMessage(rawMessage, hashedWith)
-	return digest, hashedWith, err
+	return
 }
 
 func hashMessage(rawMessage io.Reader, hashFunc crypto.Hash) ([]byte, error) {

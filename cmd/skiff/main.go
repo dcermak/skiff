@@ -12,8 +12,8 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func main() {
-	cmd := &cli.Command{
+func newRootCommand() *cli.Command {
+	return &cli.Command{
 		Name:  "skiff",
 		Usage: "Analyze the disk usage and directory structure of OCI images and its layers",
 		Before: func(ctx context.Context, c *cli.Command) (context.Context, error) {
@@ -47,10 +47,12 @@ func main() {
 
 			return ctx, nil
 		},
-		Commands: []*cli.Command{&LayerUsage, &topCommand},
+		Commands: []*cli.Command{&LayerUsage, &topCommand, &rpmDiffCommand},
 	}
+}
 
-	err := cmd.Run(context.Background(), os.Args)
+func main() {
+	err := newRootCommand().Run(context.Background(), os.Args)
 	if err != nil {
 		fmt.Fprint(os.Stderr, err)
 		os.Exit(1)

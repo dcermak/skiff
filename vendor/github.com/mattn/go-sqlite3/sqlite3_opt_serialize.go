@@ -5,7 +5,7 @@ package sqlite3
 
 /*
 #ifndef USE_LIBSQLITE3
-#include "sqlite3-binding.h"
+#include <sqlite3-binding.h>
 #else
 #include <sqlite3.h>
 #endif
@@ -17,6 +17,7 @@ import "C"
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"unsafe"
 )
 
@@ -42,8 +43,14 @@ func (c *SQLiteConn) Serialize(schema string) ([]byte, error) {
 		return nil, fmt.Errorf("serialized database is too large (%d bytes)", sz)
 	}
 
+	cBuf := *(*[]byte)(unsafe.Pointer(&reflect.SliceHeader{
+		Data: uintptr(unsafe.Pointer(ptr)),
+		Len:  int(sz),
+		Cap:  int(sz),
+	}))
+
 	res := make([]byte, int(sz))
-	copy(res, unsafe.Slice((*byte)(unsafe.Pointer(ptr)), int(sz)))
+	copy(res, cBuf)
 	return res, nil
 }
 
@@ -60,7 +67,12 @@ func (c *SQLiteConn) Deserialize(b []byte, schema string) error {
 	defer C.free(unsafe.Pointer(zSchema))
 
 	tmpBuf := (*C.uchar)(C.sqlite3_malloc64(C.sqlite3_uint64(len(b))))
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(tmpBuf)), len(b)), b)
+	cBuf := *(*[]byte)(unsafe.Pointer(&reflect.SliceHeader{
+		Data: uintptr(unsafe.Pointer(tmpBuf)),
+		Len:  len(b),
+		Cap:  len(b),
+	}))
+	copy(cBuf, b)
 
 	rc := C.sqlite3_deserialize(c.db, zSchema, tmpBuf, C.sqlite3_int64(len(b)),
 		C.sqlite3_int64(len(b)), C.SQLITE_DESERIALIZE_FREEONCLOSE)
