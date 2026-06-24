@@ -1,0 +1,25 @@
+---
+name: Vendor check
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+
+jobs:
+  vendor-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Regenerate vendor directory
+        run: make vendor-in-container
+
+      - name: Ensure vendor/ is up-to-date
+        run: |
+          if [ -n "$(git status --porcelain -- go.mod go.sum vendor/)" ]; then
+            git diff --text -- go.mod go.sum vendor/
+            echo "::error::vendor/ is out of date. Run 'make vendor-in-container' locally and commit the result."
+            exit 1
+          fi
