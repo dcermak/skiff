@@ -5,7 +5,7 @@ go 1.25.7
 require (
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/syndtr/gocapability v0.0.0-20200815063812-42c35b437635
-	github.com/urfave/cli/v3 v3.10.0
+	github.com/urfave/cli/v3 v3.10.1
 	go.podman.io/common v0.67.1
 	go.podman.io/image/v5 v5.39.2
 	go.podman.io/storage v1.62.0
