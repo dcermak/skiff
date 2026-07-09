@@ -20,5 +20,5 @@ vendor:
 vendor-in-container:
 	podman run --rm --env HOME=/root \
 		-v $(CURDIR):/src:Z -w /src \
-		registry.suse.com/bci/golang:1.25 \
+		registry.suse.com/bci/golang:1.26 \
 		make vendor
