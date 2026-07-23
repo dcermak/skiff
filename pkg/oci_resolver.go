@@ -57,6 +57,11 @@ type OCIResolver struct {
 	sysCtx       *types.SystemContext
 	fsIndex      map[string]*FileEntry
 	symlinkCache map[string]string
+	// diffIDs holds the uncompressed layer diff IDs from the image config,
+	// aligned by layer index. Nil when the config is unavailable or does
+	// not describe a diff ID per layer, in which case fileSystemID falls
+	// back to compressed blob digests.
+	diffIDs []digest.Digest
 	// openBlob, when set, returns a fully decompressed tar stream for a
 	// layer digest. Production code wires this through imgSrc.GetBlob +
 	// compression.AutoDecompress; tests can substitute a buffer-backed
@@ -83,13 +88,25 @@ type FileEntry struct {
 	Mode               fs.FileMode
 	ModTime            time.Time
 	LayerDigest        digest.Digest
+	DiffID             digest.Digest
 	LayerIndex         int
 	LinkTarget         string
 	UID                int
 	GID                int
 	TypeFlag           byte
 	ContentLayerDigest digest.Digest
+	ContentDiffID      digest.Digest
 	ContentPath        string
+	// ContentOrdinal disambiguates duplicate paths within a single layer
+	// tar: it is the 0-based index of this entry among headers sharing its
+	// clean name. Content reads seek to this occurrence so the bytes match
+	// the (last-writer-wins) metadata. 0 for the common single-entry case;
+	// for hard links it mirrors the resolved target's ordinal.
+	ContentOrdinal int
+	// MIMEType is the content-classified MIME type for regular files and
+	// hard links, computed once at index time. Empty for empty files and
+	// non-content entries (dir, symlink, device, FIFO).
+	MIMEType string
 }
 
 // NewOCIResolver creates a new resolver and builds the in-memory file index.
@@ -141,12 +158,27 @@ func (r *OCIResolver) buildIndex(ctx context.Context) error {
 		return err
 	}
 
+	r.diffIDs = r.layerDiffIDs(ctx, len(layerInfos))
+
 	for i, layer := range layerInfos {
 		if err := r.processLayer(ctx, layer, i); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// layerDiffIDs returns the uncompressed layer diff IDs from the image
+// config, aligned by layer index. It returns nil when the config is
+// unavailable or does not describe a diff ID for every layer, in which
+// case fileSystemID falls back to compressed blob digests.
+func (r *OCIResolver) layerDiffIDs(ctx context.Context, nLayers int) []digest.Digest {
+	conf, err := r.img.OCIConfig(ctx)
+	if err != nil || conf == nil || conf.RootFS.Type != "layers" ||
+		len(conf.RootFS.DiffIDs) != nLayers {
+		return nil
+	}
+	return conf.RootFS.DiffIDs
 }
 
 func (r *OCIResolver) processLayer(ctx context.Context, layer types.BlobInfo, index int) error {
@@ -165,10 +197,29 @@ func (r *OCIResolver) processLayer(ctx context.Context, layer types.BlobInfo, in
 	return r.processLayerTar(tar.NewReader(uncompressedStream), layer.Digest, index)
 }
 
+// tar mode bits for special permissions (not exported by archive/tar).
+const (
+	cISUID = 0o4000 // setuid
+	cISGID = 0o2000 // setgid
+	cISVTX = 0o1000 // sticky
+)
+
 // tarHeaderMode reconstructs fs.FileMode from a tar header without going
 // through (*tar.Header).FileInfo, which heap-allocates a wrapper per call.
 func tarHeaderMode(hdr *tar.Header) fs.FileMode {
 	m := fs.FileMode(hdr.Mode & 0o777)
+	// The setuid/setgid/sticky bits live at different positions in
+	// fs.FileMode than in the tar mode, so translate them explicitly
+	// (mirrors (*tar.Header).FileInfo().Mode()).
+	if hdr.Mode&cISUID != 0 {
+		m |= fs.ModeSetuid
+	}
+	if hdr.Mode&cISGID != 0 {
+		m |= fs.ModeSetgid
+	}
+	if hdr.Mode&cISVTX != 0 {
+		m |= fs.ModeSticky
+	}
 	switch hdr.Typeflag {
 	case tar.TypeDir:
 		m |= fs.ModeDir
@@ -238,6 +289,12 @@ type whiteoutEntry struct {
 // It uses a collect-then-apply strategy so that whiteouts only affect entries
 // from lower layers, never entries introduced by the same layer.
 //
+// Duplicate paths within a layer are tolerated with last-writer-wins
+// semantics, matching real tar extractors: the last entry for a path wins
+// in the squashed index (Phase 3 applies newEntries in tar order), and
+// content reads seek to that entry's occurrence via ContentOrdinal so the
+// returned bytes match the winning entry's metadata.
+//
 // Hard links are resolved during Phase 1, before whiteouts apply, so a
 // same-layer `whiteout(/a) + hardlink(/b -> /a)` pattern still lets /b
 // serve the lower-layer bytes that /a used to point at. This is the
@@ -245,10 +302,21 @@ type whiteoutEntry struct {
 // differently; if a real fixture surfaces a different expectation,
 // revisit.
 func (r *OCIResolver) processLayerTar(tr *tar.Reader, layerDigest digest.Digest, layerIndex int) error {
-	seen := make(map[string]struct{})
+	// pathCount tracks, per clean name, how many headers with that name have
+	// been seen so far in this layer. Each entry's ordinal is its 0-based
+	// index among duplicates; readFromTar counts the same way so content
+	// reads land on the matching occurrence.
+	pathCount := make(map[string]int)
 	layerEntries := make(map[string]*FileEntry)
 	var newEntries []*FileEntry
 	var whiteouts []whiteoutEntry
+
+	// Uncompressed diff ID for this layer, when the image config provided
+	// one; empty otherwise (fileSystemID then falls back to the digest).
+	var layerDiffID digest.Digest
+	if layerIndex >= 0 && layerIndex < len(r.diffIDs) {
+		layerDiffID = r.diffIDs[layerIndex]
+	}
 
 	for {
 		hdr, err := tr.Next()
@@ -264,10 +332,8 @@ func (r *OCIResolver) processLayerTar(tr *tar.Reader, layerDigest digest.Digest,
 			return fmt.Errorf("invalid tar entry name %q: %w", hdr.Name, err)
 		}
 
-		if _, dup := seen[cleanPath]; dup {
-			return fmt.Errorf("duplicate path in layer tar: %s", cleanPath)
-		}
-		seen[cleanPath] = struct{}{}
+		ord := pathCount[cleanPath]
+		pathCount[cleanPath]++
 
 		dir, base := path.Split(cleanPath)
 		if strings.HasPrefix(base, ".wh.") {
@@ -289,6 +355,7 @@ func (r *OCIResolver) processLayerTar(tr *tar.Reader, layerDigest digest.Digest,
 			Mode:        tarHeaderMode(hdr),
 			ModTime:     hdr.ModTime,
 			LayerDigest: layerDigest,
+			DiffID:      layerDiffID,
 			LayerIndex:  layerIndex,
 			LinkTarget:  hdr.Linkname,
 			UID:         hdr.Uid,
@@ -299,7 +366,13 @@ func (r *OCIResolver) processLayerTar(tr *tar.Reader, layerDigest digest.Digest,
 		switch hdr.Typeflag {
 		case tar.TypeReg, tar.TypeRegA:
 			entry.ContentLayerDigest = layerDigest
+			entry.ContentDiffID = layerDiffID
 			entry.ContentPath = cleanPath
+			entry.ContentOrdinal = ord
+			// Classify the content once, here, while the tar reader is
+			// positioned at the payload. file.MIMEType reads only the
+			// leading bytes; the next tr.Next() skips the remainder.
+			entry.MIMEType = file.MIMEType(tr)
 		case tar.TypeLink:
 			if hdr.Linkname == "" {
 				return fmt.Errorf("hard link at %s has empty target", cleanPath)
@@ -327,7 +400,10 @@ func (r *OCIResolver) processLayerTar(tr *tar.Reader, layerDigest digest.Digest,
 				return fmt.Errorf("unsupported hard link target type %d at %s -> %s (only regular files are supported)", target.TypeFlag, cleanPath, targetPath)
 			}
 			entry.ContentLayerDigest = target.ContentLayerDigest
+			entry.ContentDiffID = target.ContentDiffID
 			entry.ContentPath = target.ContentPath
+			entry.ContentOrdinal = target.ContentOrdinal
+			entry.MIMEType = target.MIMEType
 			// Align reported size with what reads will actually produce;
 			// hard-link tar headers commonly carry Size=0.
 			entry.Size = target.Size
@@ -370,15 +446,26 @@ func (r *OCIResolver) processLayerTar(tr *tar.Reader, layerDigest digest.Digest,
 	return nil
 }
 
-// fileSystemID returns the layer digest that downstream tools should key
-// off for this entry. For hard links this is the layer where the bytes
-// actually live (ContentLayerDigest), not the layer that introduced the
-// link entry itself; for regular files the two are equal.
+// fileSystemID returns the layer identifier that downstream tools (Syft)
+// should key off for this entry. Syft's Location.FileSystemID is the
+// uncompressed layer diff ID, so diff IDs are preferred; the compressed
+// blob digests are used only as a fallback when the image config did not
+// provide diff IDs (or for &FileEntry{} test literals).
+//
+// For hard links this reports the layer where the bytes actually live
+// (Content* fields), not the layer that introduced the link entry
+// itself; for regular files the two are equal.
 func fileSystemID(e *FileEntry) string {
-	if e.ContentLayerDigest != "" {
+	switch {
+	case e.ContentDiffID != "":
+		return e.ContentDiffID.String()
+	case e.DiffID != "":
+		return e.DiffID.String()
+	case e.ContentLayerDigest != "":
 		return e.ContentLayerDigest.String()
+	default:
+		return e.LayerDigest.String()
 	}
-	return e.LayerDigest.String()
 }
 
 // lexSmallestAlias returns the lexicographically smallest path in
@@ -406,20 +493,24 @@ func (r *OCIResolver) FileContentsByLocation(loc syftFile.Location) (io.ReadClos
 
 	layerDigest := entry.ContentLayerDigest
 	targetPath := entry.ContentPath
+	ordinal := entry.ContentOrdinal
 	if layerDigest == "" || targetPath == "" {
 		// Legacy entry (e.g. raw &FileEntry{} test literal) — fall
 		// back to addressing by the location's own path.
 		layerDigest = entry.LayerDigest
 		targetPath = loc.RealPath
+		ordinal = 0
 	}
 
-	return r.readFromLayer(context.Background(), layerDigest, targetPath)
+	return r.readFromLayer(context.Background(), layerDigest, targetPath, ordinal)
 }
 
-// readFromTar advances tr until it finds the header at targetPath and
-// returns the reader positioned at that entry's payload. Entries with
-// invalid tar names are skipped rather than failing the search.
-func readFromTar(tr *tar.Reader, targetPath string) (io.Reader, error) {
+// readFromTar advances tr until it finds the ordinal-th header at targetPath
+// (0-based, to disambiguate duplicate paths within a layer) and returns the
+// reader positioned at that entry's payload. Entries with invalid tar names
+// are skipped rather than failing the search.
+func readFromTar(tr *tar.Reader, targetPath string, ordinal int) (io.Reader, error) {
+	match := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -433,18 +524,21 @@ func readFromTar(tr *tar.Reader, targetPath string) (io.Reader, error) {
 			continue
 		}
 		if clean == targetPath {
-			return tr, nil
+			if match == ordinal {
+				return tr, nil
+			}
+			match++
 		}
 	}
 }
 
-func (r *OCIResolver) readFromLayer(ctx context.Context, layerDigest digest.Digest, targetPath string) (io.ReadCloser, error) {
+func (r *OCIResolver) readFromLayer(ctx context.Context, layerDigest digest.Digest, targetPath string, ordinal int) (io.ReadCloser, error) {
 	rc, err := r.openBlobInternal(ctx, layerDigest)
 	if err != nil {
 		return nil, err
 	}
 	tr := tar.NewReader(rc)
-	payload, err := readFromTar(tr, targetPath)
+	payload, err := readFromTar(tr, targetPath, ordinal)
 	if err != nil {
 		rc.Close()
 		return nil, err
@@ -685,8 +779,69 @@ func (r *OCIResolver) FilesByGlob(patterns ...string) ([]syftFile.Location, erro
 	return locations, nil
 }
 
-func (r *OCIResolver) FilesByMIMEType(types ...string) ([]syftFile.Location, error) {
-	return nil, nil
+// FilesByMIMEType returns locations for regular files (and hard links)
+// whose content was classified as one of the given MIME types. MIME types
+// are computed once at index time (see processLayerTar) and stored on each
+// FileEntry, so this only scans the index; it performs no reads.
+//
+// Iteration and hard-link dedup mirror FilesByGlob: paths are walked in
+// sorted order and only the first entry per content key is recorded, so
+// output order and the canonical RealPath are independent of map order.
+func (r *OCIResolver) FilesByMIMEType(mimeTypes ...string) ([]syftFile.Location, error) {
+	if len(mimeTypes) == 0 {
+		return nil, nil
+	}
+	want := make(map[string]struct{}, len(mimeTypes))
+	for _, t := range mimeTypes {
+		want[t] = struct{}{}
+	}
+
+	sortedPaths := make([]string, 0, len(r.fsIndex))
+	for p := range r.fsIndex {
+		sortedPaths = append(sortedPaths, p)
+	}
+	sort.Strings(sortedPaths)
+
+	var locations []syftFile.Location
+	seen := make(map[string]struct{})
+
+	for _, pathStr := range sortedPaths {
+		entry := r.fsIndex[pathStr]
+		if entry.TypeFlag == tar.TypeDir || entry.MIMEType == "" {
+			continue
+		}
+		if _, ok := want[entry.MIMEType]; !ok {
+			continue
+		}
+
+		var key, realPath string
+		if entry.ContentLayerDigest != "" && entry.ContentPath != "" {
+			key = entry.ContentLayerDigest.String() + ":" + entry.ContentPath
+			realPath = r.lexSmallestAlias(entry.ContentLayerDigest, entry.ContentPath)
+			if realPath == "" {
+				realPath = pathStr
+			}
+		} else {
+			// Legacy entry (test literal) with no content coords.
+			key = pathStr
+			realPath = pathStr
+		}
+
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		loc := syftFile.NewLocationFromCoordinates(syftFile.Coordinates{
+			RealPath:     realPath,
+			FileSystemID: fileSystemID(entry),
+		})
+		if pathStr != realPath {
+			loc.AccessPath = pathStr
+		}
+		locations = append(locations, loc)
+	}
+	return locations, nil
 }
 
 // RelativeFileByPath resolves a path relative to an anchor location.
@@ -772,6 +927,7 @@ func (r *OCIResolver) FileMetadataByLocation(loc syftFile.Location) (syftFile.Me
 		UserID:          entry.UID,
 		GroupID:         entry.GID,
 		Type:            file.TypeFromTarType(entry.TypeFlag),
+		MIMEType:        entry.MIMEType,
 	}
 
 	return meta, nil

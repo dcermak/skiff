@@ -3,12 +3,20 @@
 package skiff
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/opencontainers/go-digest"
+	imgspec "github.com/opencontainers/image-spec/specs-go"
+	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/storage/pkg/reexec"
 	"go.podman.io/storage/pkg/unshare"
@@ -99,6 +107,17 @@ func TestOCIResolver(t *testing.T) {
 		if !strings.Contains(s, "root:x:0:0") {
 			t.Errorf("Content of /etc/passwd did not contain expected string 'root:x:0:0'. Got:\n%s", s)
 		}
+
+		// Metadata should surface the content-classified MIME type.
+		meta, err := resolver.FileMetadataByLocation(locs[0])
+		if err != nil {
+			t.Fatalf("FileMetadataByLocation(/etc/passwd): %v", err)
+		}
+		if meta.MIMEType == "" {
+			t.Error("expected MIMEType to be populated for /etc/passwd")
+		} else if !strings.HasPrefix(meta.MIMEType, "text/") {
+			t.Logf("MIMEType of /etc/passwd = %q (expected a text/* type)", meta.MIMEType)
+		}
 	})
 
 	t.Run("FileMetadataByLocation", func(t *testing.T) {
@@ -172,5 +191,188 @@ func TestOCIResolver_Whiteouts(t *testing.T) {
 				t.Errorf("Path %s: expected exists=%v, got %v", tc.path, tc.exists, exists)
 			}
 		})
+	}
+}
+
+// TestOCIResolver_DuplicatePaths exercises last-writer-wins handling of
+// duplicate tar entries within a single layer. Container builders never emit
+// such layers, so we hand-craft one and load it through the real oci:
+// transport, driving the full resolve path (GetBlob -> AutoDecompress ->
+// processLayerTar -> readFromLayer) end to end.
+func TestOCIResolver_DuplicatePaths(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	entries := []struct {
+		name     string
+		typeflag byte
+		content  string
+	}{
+		{"dir/", tar.TypeDir, ""},   // duplicate directory (first)
+		{"foo", tar.TypeReg, "a"},   // duplicate regular file (first)
+		{"dir/", tar.TypeDir, ""},   // duplicate directory (second)
+		{"foo", tar.TypeReg, "bb"},  // duplicate regular file (last writer wins)
+	}
+	for _, e := range entries {
+		hdr := &tar.Header{Name: e.name, Typeflag: e.typeflag, Size: int64(len(e.content)), Mode: 0o644}
+		if e.typeflag == tar.TypeDir {
+			hdr.Mode = 0o755
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("WriteHeader(%s): %v", e.name, err)
+		}
+		if len(e.content) > 0 {
+			if _, err := tw.Write([]byte(e.content)); err != nil {
+				t.Fatalf("Write(%s): %v", e.name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+
+	dir := t.TempDir()
+	writeOCIImage(t, dir, buf.Bytes())
+
+	ctx := context.Background()
+	sysCtx := &types.SystemContext{}
+	img, _, err := ImageAndLayersFromURI(ctx, sysCtx, "oci:"+dir+":latest")
+	if err != nil {
+		t.Fatalf("failed to load synthetic image: %v", err)
+	}
+
+	resolver, err := NewOCIResolver(ctx, img, sysCtx)
+	if err != nil {
+		t.Fatalf("NewOCIResolver: %v", err)
+	}
+	defer resolver.Close()
+
+	// Duplicate directory is tolerated: it resolves without error and exists.
+	if !resolver.HasPath("/dir") {
+		t.Error("expected /dir to exist (duplicate directory should be tolerated)")
+	}
+
+	locs, err := resolver.FilesByPath("/foo")
+	if err != nil || len(locs) == 0 {
+		t.Fatalf("FilesByPath(/foo): locs=%v err=%v", locs, err)
+	}
+
+	// Metadata reflects the last writer ("bb"), not the first ("a").
+	meta, err := resolver.FileMetadataByLocation(locs[0])
+	if err != nil {
+		t.Fatalf("FileMetadataByLocation(/foo): %v", err)
+	}
+	if meta.Size() != 2 {
+		t.Errorf("size = %d, want 2 (last writer 'bb')", meta.Size())
+	}
+	if meta.MIMEType == "" {
+		t.Error("expected MIMEType to be populated for /foo")
+	}
+
+	// Content read must land on the same (last) occurrence via ContentOrdinal.
+	rc, err := resolver.FileContentsByLocation(locs[0])
+	if err != nil {
+		t.Fatalf("FileContentsByLocation(/foo): %v", err)
+	}
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read /foo: %v", err)
+	}
+	if string(got) != "bb" {
+		t.Errorf("content = %q, want %q (last writer wins)", got, "bb")
+	}
+}
+
+// writeOCIImage assembles a minimal single-layer OCI image layout in dir from
+// the given uncompressed layer tar bytes, ready to load as "oci:<dir>:latest".
+// Blobs, config, manifest, index.json and oci-layout are written by hand using
+// only already-vendored dependencies (no go-containerregistry / re-vendor).
+func writeOCIImage(t *testing.T, dir string, layerTar []byte) {
+	t.Helper()
+
+	// diff ID addresses the *uncompressed* tar (image config rootfs.diff_ids),
+	// which is what layerDiffIDs() reads to align FileSystemIDs.
+	diffID := digest.FromBytes(layerTar)
+
+	// The manifest layer descriptor addresses the gzip-compressed blob.
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	if _, err := zw.Write(layerTar); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	layerBlob := gz.Bytes()
+	layerDigest := digest.FromBytes(layerBlob)
+
+	blobsDir := filepath.Join(dir, "blobs", "sha256")
+	if err := os.MkdirAll(blobsDir, 0o755); err != nil {
+		t.Fatalf("mkdir blobs: %v", err)
+	}
+	writeBlob := func(d digest.Digest, data []byte) {
+		if err := os.WriteFile(filepath.Join(blobsDir, d.Encoded()), data, 0o644); err != nil {
+			t.Fatalf("write blob %s: %v", d, err)
+		}
+	}
+	writeBlob(layerDigest, layerBlob)
+
+	config := imgspecv1.Image{
+		Platform: imgspecv1.Platform{Architecture: "amd64", OS: "linux"},
+		RootFS:   imgspecv1.RootFS{Type: "layers", DiffIDs: []digest.Digest{diffID}},
+	}
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	configDigest := digest.FromBytes(configJSON)
+	writeBlob(configDigest, configJSON)
+
+	manifest := imgspecv1.Manifest{
+		Versioned: imgspec.Versioned{SchemaVersion: 2},
+		MediaType: imgspecv1.MediaTypeImageManifest,
+		Config: imgspecv1.Descriptor{
+			MediaType: imgspecv1.MediaTypeImageConfig,
+			Digest:    configDigest,
+			Size:      int64(len(configJSON)),
+		},
+		Layers: []imgspecv1.Descriptor{{
+			MediaType: imgspecv1.MediaTypeImageLayerGzip,
+			Digest:    layerDigest,
+			Size:      int64(len(layerBlob)),
+		}},
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestDigest := digest.FromBytes(manifestJSON)
+	writeBlob(manifestDigest, manifestJSON)
+
+	index := imgspecv1.Index{
+		Versioned: imgspec.Versioned{SchemaVersion: 2},
+		MediaType: imgspecv1.MediaTypeImageIndex,
+		Manifests: []imgspecv1.Descriptor{{
+			MediaType:   imgspecv1.MediaTypeImageManifest,
+			Digest:      manifestDigest,
+			Size:        int64(len(manifestJSON)),
+			Platform:    &imgspecv1.Platform{Architecture: "amd64", OS: "linux"},
+			Annotations: map[string]string{imgspecv1.AnnotationRefName: "latest"},
+		}},
+	}
+	indexJSON, err := json.Marshal(index)
+	if err != nil {
+		t.Fatalf("marshal index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), indexJSON, 0o644); err != nil {
+		t.Fatalf("write index.json: %v", err)
+	}
+
+	layoutJSON, err := json.Marshal(imgspecv1.ImageLayout{Version: imgspecv1.ImageLayoutVersion})
+	if err != nil {
+		t.Fatalf("marshal oci-layout: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, imgspecv1.ImageLayoutFile), layoutJSON, 0o644); err != nil {
+		t.Fatalf("write oci-layout: %v", err)
 	}
 }

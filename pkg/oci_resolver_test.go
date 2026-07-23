@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anchore/stereoscope/pkg/file"
 	syftFile "github.com/anchore/syft/syft/file"
 	"github.com/opencontainers/go-digest"
 )
@@ -838,14 +839,6 @@ func TestProcessLayerTar_ValidationErrors(t *testing.T) {
 			entries: []tarEntry{{name: ".wh.", typeflag: tar.TypeReg}},
 			wantSub: "empty basename",
 		},
-		{
-			name: "duplicate path in single layer",
-			entries: []tarEntry{
-				{name: "foo", typeflag: tar.TypeReg, content: "a"},
-				{name: "foo", typeflag: tar.TypeReg, content: "b"},
-			},
-			wantSub: "duplicate path",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1054,5 +1047,190 @@ func TestFileContentsByLocation_TargetMissingInTarClosesBlob(t *testing.T) {
 	}
 	if closed != 1 {
 		t.Errorf("blob closed %d times, want 1", closed)
+	}
+}
+
+// --- #5: special permission bits ---
+
+func TestTarHeaderMode_SpecialBits(t *testing.T) {
+	cases := []struct {
+		name string
+		mode int64
+		want fs.FileMode
+	}{
+		{"plain", 0o644, 0o644},
+		{"setuid", 0o4755, 0o755 | fs.ModeSetuid},
+		{"setgid", 0o2755, 0o755 | fs.ModeSetgid},
+		{"sticky", 0o1777, 0o777 | fs.ModeSticky},
+		{"all special", 0o7755, 0o755 | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tarHeaderMode(&tar.Header{Typeflag: tar.TypeReg, Mode: tc.mode})
+			if got != tc.want {
+				t.Errorf("tarHeaderMode(%#o) = %v (%#o), want %v (%#o)",
+					tc.mode, got, uint32(got), tc.want, uint32(tc.want))
+			}
+		})
+	}
+}
+
+// --- #4: FileSystemID uses uncompressed diff IDs ---
+
+func TestFileSystemID_PrefersDiffID(t *testing.T) {
+	compressed := digest.FromString("compressed-layer-0")
+	diffID := digest.FromString("diffid-layer-0")
+
+	r := newTestResolver(map[string]*FileEntry{})
+	r.diffIDs = []digest.Digest{diffID}
+	tr := buildTar(t, []tarEntry{
+		{name: "bin/sh", typeflag: tar.TypeReg, content: "x"},
+	})
+	if err := r.processLayerTar(tr, compressed, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	locs, err := r.FilesByPath("/bin/sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("expected 1 location, got %d: %+v", len(locs), locs)
+	}
+	if locs[0].FileSystemID != diffID.String() {
+		t.Errorf("FileSystemID=%q, want uncompressed diffID %q", locs[0].FileSystemID, diffID)
+	}
+}
+
+func TestFileSystemID_FallsBackToCompressed(t *testing.T) {
+	compressed := digest.FromString("compressed-layer-0")
+
+	r := newTestResolver(map[string]*FileEntry{})
+	// r.diffIDs stays nil: no diff ID available for this layer.
+	tr := buildTar(t, []tarEntry{
+		{name: "bin/sh", typeflag: tar.TypeReg, content: "x"},
+	})
+	if err := r.processLayerTar(tr, compressed, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	locs, err := r.FilesByPath("/bin/sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locs) != 1 || locs[0].FileSystemID != compressed.String() {
+		t.Errorf("FileSystemID=%+v, want compressed digest %q", locs, compressed)
+	}
+}
+
+func TestFileSystemID_HardLinkUsesContentLayerDiffID(t *testing.T) {
+	compressed0 := digest.FromString("compressed-0")
+	compressed1 := digest.FromString("compressed-1")
+	diff0 := digest.FromString("diff-0")
+	diff1 := digest.FromString("diff-1")
+
+	r := newTestResolver(map[string]*FileEntry{})
+	r.diffIDs = []digest.Digest{diff0, diff1}
+
+	// Layer 0 introduces the regular file whose bytes back the link.
+	if err := r.processLayerTar(buildTar(t, []tarEntry{
+		{name: "src", typeflag: tar.TypeReg, content: "hello"},
+	}), compressed0, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Layer 1 introduces a hard link to it.
+	if err := r.processLayerTar(buildTar(t, []tarEntry{
+		{name: "link", typeflag: tar.TypeLink, linkname: "src"},
+	}), compressed1, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	locs, err := r.FilesByPath("/link")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("expected 1 location, got %d: %+v", len(locs), locs)
+	}
+	// Bytes live in layer 0, so the reported layer ID must be layer 0's diff ID.
+	if locs[0].FileSystemID != diff0.String() {
+		t.Errorf("FileSystemID=%q, want layer-0 diffID %q", locs[0].FileSystemID, diff0)
+	}
+}
+
+// --- #3: FilesByMIMEType ---
+
+func TestFilesByMIMEType(t *testing.T) {
+	const textContent = "#!/bin/sh\necho hello world\n"
+	wantMIME := file.MIMEType(strings.NewReader(textContent))
+	if wantMIME == "" {
+		t.Fatal("precondition: sample content classified as empty MIME type")
+	}
+
+	r := newTestResolver(map[string]*FileEntry{})
+	tr := buildTar(t, []tarEntry{
+		{name: "etc", typeflag: tar.TypeDir},
+		{name: "etc/motd", typeflag: tar.TypeReg, content: textContent},
+		{name: "etc/empty", typeflag: tar.TypeReg, content: ""},
+		{name: "etc/link", typeflag: tar.TypeSymlink, linkname: "/etc/motd"},
+	})
+	if err := r.processLayerTar(tr, testDigest, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Matching type returns exactly the classified regular file — not the
+	// directory, empty file, or symlink.
+	locs, err := r.FilesByMIMEType(wantMIME)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("FilesByMIMEType(%q): got %d locations, want 1: %+v", wantMIME, len(locs), locs)
+	}
+	if locs[0].RealPath != "/etc/motd" {
+		t.Errorf("RealPath=%q, want /etc/motd", locs[0].RealPath)
+	}
+
+	// A non-matching type yields nothing.
+	none, err := r.FilesByMIMEType("application/x-not-a-real-type")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Errorf("expected no matches for bogus type, got %+v", none)
+	}
+
+	// No types requested: nil result, no error.
+	empty, err := r.FilesByMIMEType()
+	if err != nil || len(empty) != 0 {
+		t.Errorf("FilesByMIMEType() = (%+v, %v), want (nil, nil)", empty, err)
+	}
+}
+
+func TestFilesByMIMEType_HardLinkDedup(t *testing.T) {
+	const content = "the quick brown fox jumps over the lazy dog\n"
+	wantMIME := file.MIMEType(strings.NewReader(content))
+	if wantMIME == "" {
+		t.Fatal("precondition: sample content classified as empty MIME type")
+	}
+
+	r := newTestResolver(map[string]*FileEntry{})
+	tr := buildTar(t, []tarEntry{
+		{name: "a.txt", typeflag: tar.TypeReg, content: content},
+		{name: "b.txt", typeflag: tar.TypeLink, linkname: "a.txt"},
+	})
+	if err := r.processLayerTar(tr, testDigest, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	locs, err := r.FilesByMIMEType(wantMIME)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("expected 1 deduped location, got %d: %+v", len(locs), locs)
+	}
+	if locs[0].RealPath != "/a.txt" {
+		t.Errorf("RealPath=%q, want /a.txt (lex smallest alias)", locs[0].RealPath)
 	}
 }
