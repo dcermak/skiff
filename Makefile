@@ -1,12 +1,19 @@
-.PHONY: binaries vendor vendor-in-container unit-tests behave
+.PHONY: binaries vendor vendor-in-container unit-tests behave test-image test-image-fedora integration-tests
 
 # Build the binaries
 binaries:
 	go build -o bin/skiff ./cmd/skiff
 
-# Run unit tests
+test-image:
+	cd pkg; buildah bud --layers -t skiff-test-image -f TestImage.containerfile .
+
+# Run unit tests (no buildah / namespace setup / network required)
 unit-tests:
-	go test -v ./cmd/skiff/...
+	go test ./...
+
+# Run integration tests (requires the local test images and namespace setup)
+integration-tests: test-image
+	go test -tags=integration ./...
 
 # Run behave tests
 behave:
@@ -20,5 +27,5 @@ vendor:
 vendor-in-container:
 	podman run --rm --env HOME=/root \
 		-v $(CURDIR):/src:Z -w /src \
-		registry.suse.com/bci/golang:1.25 \
+		registry.suse.com/bci/golang:1.26 \
 		make vendor

@@ -48,3 +48,10 @@ jobs:
       - name: test
         run: make unit-tests
         working-directory: .
+
+      - name: set kernel config to workaround apparmor on ubuntu blocking unshare(CLONE_NEWNS)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: integration test
+        run: make integration-tests
+        working-directory: .
