@@ -105,3 +105,14 @@ def step_impl(context):
         raise AssertionError(
             f"Stdout doesn't equal:\n{expected}\n\nActual stdout:\n{found}"
         )
+
+
+@behave.step("stderr is")
+def step_impl(context):
+    expected = context.text.format(context=context).strip()
+    found = context.cmd_stderr.strip()
+
+    if expected != found:
+        raise AssertionError(
+            f"Stderr doesn't equal:\n{expected}\n\nActual stderr:\n{found}"
+        )

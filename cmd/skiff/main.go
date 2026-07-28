@@ -47,7 +47,7 @@ func main() {
 
 			return ctx, nil
 		},
-		Commands: []*cli.Command{&LayerUsage, &topCommand},
+		Commands: []*cli.Command{&LayerUsage, &topCommand, &diffCommand},
 	}
 
 	err := cmd.Run(context.Background(), os.Args)
