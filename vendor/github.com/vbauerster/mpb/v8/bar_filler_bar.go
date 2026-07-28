@@ -12,14 +12,31 @@ const (
 	iLbound = iota
 	iRefiller
 	iFiller
+	iTip
 	iPadding
 	iRbound
 	iLen
 )
 
-var barStyleComposer = BarStyleComposer{
-	style:     [iLen]string{"[", "+", "=", "-", "]"},
-	tipFrames: []string{">"},
+var defaultBarStyle = [iLen]string{"[", "+", "=", ">", "-", "]"}
+
+// BarStyleComposer interface.
+type BarStyleComposer interface {
+	BarFillerBuilder
+	Lbound(string) BarStyleComposer
+	LboundMeta(func(string) string) BarStyleComposer
+	Rbound(string) BarStyleComposer
+	RboundMeta(func(string) string) BarStyleComposer
+	Filler(string) BarStyleComposer
+	FillerMeta(func(string) string) BarStyleComposer
+	Refiller(string) BarStyleComposer
+	RefillerMeta(func(string) string) BarStyleComposer
+	Padding(string) BarStyleComposer
+	PaddingMeta(func(string) string) BarStyleComposer
+	Tip(frames ...string) BarStyleComposer
+	TipMeta(func(string) string) BarStyleComposer
+	TipOnComplete() BarStyleComposer
+	Reverse() BarStyleComposer
 }
 
 type component struct {
@@ -32,11 +49,11 @@ type barSection struct {
 	bytes []byte
 }
 
-type barSections [iLen + 1]barSection
+type barSections [iLen]barSection
 
 type barFiller struct {
 	components [iLen]component
-	metas      [iLen + 1]func(string) string
+	metas      [iLen]func(string) string
 	flushOp    func(barSections, io.Writer) error
 	tip        struct {
 		onComplete bool
@@ -45,99 +62,97 @@ type barFiller struct {
 	}
 }
 
-// BarStyleComposer is a builder which provides methods to build custom BarFiller.
-// Call BarStyle to construct a new one.
-type BarStyleComposer struct {
+type barStyle struct {
 	style         [iLen]string
-	metas         [iLen + 1]func(string) string
+	metas         [iLen]func(string) string
 	tipFrames     []string
 	tipOnComplete bool
 	rev           bool
 }
 
-// BarStyle constructs default BarStyleComposer which implements
-// BarFillerBuilder interface.
+// BarStyle constructs default bar style which can be altered via
+// BarStyleComposer interface.
 func BarStyle() BarStyleComposer {
-	return barStyleComposer
+	bs := barStyle{
+		style:     defaultBarStyle,
+		tipFrames: []string{defaultBarStyle[iTip]},
+	}
+	return bs
 }
 
-func (s BarStyleComposer) Lbound(bound string) BarStyleComposer {
+func (s barStyle) Lbound(bound string) BarStyleComposer {
 	s.style[iLbound] = bound
 	return s
 }
 
-func (s BarStyleComposer) LboundMeta(fn func(string) string) BarStyleComposer {
+func (s barStyle) LboundMeta(fn func(string) string) BarStyleComposer {
 	s.metas[iLbound] = fn
 	return s
 }
 
-func (s BarStyleComposer) Rbound(bound string) BarStyleComposer {
+func (s barStyle) Rbound(bound string) BarStyleComposer {
 	s.style[iRbound] = bound
 	return s
 }
 
-func (s BarStyleComposer) RboundMeta(fn func(string) string) BarStyleComposer {
+func (s barStyle) RboundMeta(fn func(string) string) BarStyleComposer {
 	s.metas[iRbound] = fn
 	return s
 }
 
-func (s BarStyleComposer) Filler(filler string) BarStyleComposer {
+func (s barStyle) Filler(filler string) BarStyleComposer {
 	s.style[iFiller] = filler
 	return s
 }
 
-func (s BarStyleComposer) FillerMeta(fn func(string) string) BarStyleComposer {
+func (s barStyle) FillerMeta(fn func(string) string) BarStyleComposer {
 	s.metas[iFiller] = fn
 	return s
 }
 
-func (s BarStyleComposer) Refiller(refiller string) BarStyleComposer {
+func (s barStyle) Refiller(refiller string) BarStyleComposer {
 	s.style[iRefiller] = refiller
 	return s
 }
 
-func (s BarStyleComposer) RefillerMeta(fn func(string) string) BarStyleComposer {
+func (s barStyle) RefillerMeta(fn func(string) string) BarStyleComposer {
 	s.metas[iRefiller] = fn
 	return s
 }
 
-func (s BarStyleComposer) Padding(padding string) BarStyleComposer {
+func (s barStyle) Padding(padding string) BarStyleComposer {
 	s.style[iPadding] = padding
 	return s
 }
 
-func (s BarStyleComposer) PaddingMeta(fn func(string) string) BarStyleComposer {
+func (s barStyle) PaddingMeta(fn func(string) string) BarStyleComposer {
 	s.metas[iPadding] = fn
 	return s
 }
 
-func (s BarStyleComposer) Tip(frames ...string) BarStyleComposer {
+func (s barStyle) Tip(frames ...string) BarStyleComposer {
 	if len(frames) != 0 {
 		s.tipFrames = frames
 	}
 	return s
 }
 
-func (s BarStyleComposer) TipMeta(fn func(string) string) BarStyleComposer {
-	s.metas[iLen] = fn
+func (s barStyle) TipMeta(fn func(string) string) BarStyleComposer {
+	s.metas[iTip] = fn
 	return s
 }
 
-func (s BarStyleComposer) TipOnComplete() BarStyleComposer {
+func (s barStyle) TipOnComplete() BarStyleComposer {
 	s.tipOnComplete = true
 	return s
 }
 
-func (s BarStyleComposer) Reverse() BarStyleComposer {
+func (s barStyle) Reverse() BarStyleComposer {
 	s.rev = true
 	return s
 }
 
-func (s BarStyleComposer) ToBuilder() BarFillerBuilder {
-	return s
-}
-
-func (s BarStyleComposer) Build() BarFiller {
+func (s barStyle) Build() BarFiller {
 	bf := &barFiller{metas: s.metas}
 	bf.components[iLbound] = component{
 		width: runewidth.StringWidth(s.style[iLbound]),
@@ -186,7 +201,7 @@ func (s *barFiller) Fill(w io.Writer, stat decor.Statistics) error {
 	var tip component
 	var refilling, filling, padding []byte
 	var fillCount int
-	curWidth := int(internal.PercentageRound(stat.Total, stat.Current, int64(width)))
+	curWidth := int(internal.PercentageRound(stat.Total, stat.Current, uint(width)))
 
 	if curWidth != 0 {
 		if !stat.Completed || s.tip.onComplete {
@@ -196,7 +211,7 @@ func (s *barFiller) Fill(w io.Writer, stat decor.Statistics) error {
 		}
 		switch refWidth := 0; {
 		case stat.Refill != 0:
-			refWidth = int(internal.PercentageRound(stat.Total, stat.Refill, int64(width)))
+			refWidth = int(internal.PercentageRound(stat.Total, stat.Refill, uint(width)))
 			curWidth -= refWidth
 			refWidth += curWidth
 			fallthrough
@@ -222,7 +237,7 @@ func (s *barFiller) Fill(w io.Writer, stat decor.Statistics) error {
 		{s.metas[iLbound], s.components[iLbound].bytes},
 		{s.metas[iRefiller], refilling},
 		{s.metas[iFiller], filling},
-		{s.metas[iLen], tip.bytes},
+		{s.metas[iTip], tip.bytes},
 		{s.metas[iPadding], padding},
 		{s.metas[iRbound], s.components[iRbound].bytes},
 	}, w)

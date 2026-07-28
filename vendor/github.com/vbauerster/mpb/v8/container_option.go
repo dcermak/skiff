@@ -1,7 +1,6 @@
 package mpb
 
 import (
-	"cmp"
 	"io"
 	"sync"
 	"time"
@@ -33,7 +32,9 @@ func WithWidth(width int) ContainerOption {
 
 // WithQueueLen sets buffer size of heap manager channel. Ideally it must be
 // kept at MAX value, where MAX is number of bars to be rendered at the same
-// time. Default queue len is 64.
+// time. If len < MAX then backpressure to the scheduler will be increased as
+// MAX-len extra goroutines will be launched at each render cycle.
+// Default queue len is 128.
 func WithQueueLen(len int) ContainerOption {
 	return func(s *pState) {
 		s.hmQueueLen = len
@@ -49,7 +50,7 @@ func WithRefreshRate(d time.Duration) ContainerOption {
 
 // WithManualRefresh disables internal auto refresh time.Ticker.
 // Refresh will occur upon receive value from provided ch.
-func WithManualRefresh(ch <-chan any) ContainerOption {
+func WithManualRefresh(ch <-chan interface{}) ContainerOption {
 	return func(s *pState) {
 		s.manualRC = ch
 	}
@@ -59,15 +60,15 @@ func WithManualRefresh(ch <-chan any) ContainerOption {
 // soon as bar is added, with this option it's possible to delay
 // rendering process by keeping provided chan unclosed. In other words
 // rendering will start as soon as provided chan is closed.
-func WithRenderDelay(ch <-chan any) ContainerOption {
+func WithRenderDelay(ch <-chan struct{}) ContainerOption {
 	return func(s *pState) {
 		s.delayRC = ch
 	}
 }
 
-// WithShutdownNotifier closes provided channel on shutdown event,
-// i.e. after `(*Progress) Wait()` or `(*Progress) Shutdown()` call.
-func WithShutdownNotifier(ch chan any) ContainerOption {
+// WithShutdownNotifier value of type `[]*mpb.Bar` will be send into provided
+// channel upon container shutdown.
+func WithShutdownNotifier(ch chan<- interface{}) ContainerOption {
 	return func(s *pState) {
 		s.shutdownNotifier = ch
 	}
@@ -77,15 +78,21 @@ func WithShutdownNotifier(ch chan any) ContainerOption {
 // is not a terminal then auto refresh is disabled unless WithAutoRefresh
 // option is set.
 func WithOutput(w io.Writer) ContainerOption {
+	if w == nil {
+		w = io.Discard
+	}
 	return func(s *pState) {
-		s.output = cmp.Or(w, io.Discard)
+		s.output = w
 	}
 }
 
 // WithDebugOutput sets debug output.
 func WithDebugOutput(w io.Writer) ContainerOption {
+	if w == nil {
+		w = io.Discard
+	}
 	return func(s *pState) {
-		s.debugOut = cmp.Or(w, io.Discard)
+		s.debugOut = w
 	}
 }
 
@@ -136,11 +143,4 @@ func ContainerFuncOptOn(option func() ContainerOption, predicate func() bool) Co
 		return option()
 	}
 	return nil
-}
-
-// withHandOverBarHeap for test purposes only
-func withHandOverBarHeap(ch chan<- []*Bar) ContainerOption {
-	return func(s *pState) {
-		s.handOverBarHeap = ch
-	}
 }

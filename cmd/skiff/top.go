@@ -129,6 +129,7 @@ func analyzeLayers(ctx context.Context, sysCtx *types.SystemContext, uri string,
 	if err != nil {
 		return err
 	}
+	defer img.Close()
 
 	// image source that helps us fetch layers to eventually show files from the stream
 	imgSrc, err := img.Reference().NewImageSource(ctx, sysCtx)

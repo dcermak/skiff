@@ -21,7 +21,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
-	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -30,6 +29,8 @@ import (
 	"fmt"
 	"hash"
 	"io"
+
+	"golang.org/x/crypto/pbkdf2"
 
 	josecipher "github.com/go-jose/go-jose/v4/cipher"
 )
@@ -329,10 +330,7 @@ func (ctx *symmetricKeyCipher) encryptKey(cek []byte, alg KeyAlgorithm) (recipie
 
 		// derive key
 		keyLen, h := getPbkdf2Params(alg)
-		key, err := pbkdf2.Key(h, string(ctx.key), salt, ctx.p2c, keyLen)
-		if err != nil {
-			return recipientInfo{}, nil
-		}
+		key := pbkdf2.Key(ctx.key, salt, ctx.p2c, keyLen, h)
 
 		// use AES cipher with derived key
 		block, err := aes.NewCipher(key)
@@ -366,21 +364,11 @@ func (ctx *symmetricKeyCipher) encryptKey(cek []byte, alg KeyAlgorithm) (recipie
 
 // Decrypt the content encryption key.
 func (ctx *symmetricKeyCipher) decryptKey(headers rawHeader, recipient *recipientInfo, generator keyGenerator) ([]byte, error) {
-	if recipient == nil {
-		return nil, fmt.Errorf("go-jose/go-jose: missing recipient")
-	}
-
-	alg := headers.getAlgorithm()
-	if alg == DIRECT {
-		return bytes.Clone(ctx.key), nil
-	}
-
-	encryptedKey := recipient.encryptedKey
-	if len(encryptedKey) == 0 {
-		return nil, fmt.Errorf("go-jose/go-jose: missing JWE Encrypted Key")
-	}
-
-	switch alg {
+	switch headers.getAlgorithm() {
+	case DIRECT:
+		cek := make([]byte, len(ctx.key))
+		copy(cek, ctx.key)
+		return cek, nil
 	case A128GCMKW, A192GCMKW, A256GCMKW:
 		aead := newAESGCM(len(ctx.key))
 
@@ -395,7 +383,7 @@ func (ctx *symmetricKeyCipher) decryptKey(headers rawHeader, recipient *recipien
 
 		parts := &aeadParts{
 			iv:         iv.bytes(),
-			ciphertext: encryptedKey,
+			ciphertext: recipient.encryptedKey,
 			tag:        tag.bytes(),
 		}
 
@@ -411,7 +399,7 @@ func (ctx *symmetricKeyCipher) decryptKey(headers rawHeader, recipient *recipien
 			return nil, err
 		}
 
-		cek, err := josecipher.KeyUnwrap(block, encryptedKey)
+		cek, err := josecipher.KeyUnwrap(block, recipient.encryptedKey)
 		if err != nil {
 			return nil, err
 		}
@@ -444,10 +432,7 @@ func (ctx *symmetricKeyCipher) decryptKey(headers rawHeader, recipient *recipien
 
 		// derive key
 		keyLen, h := getPbkdf2Params(alg)
-		key, err := pbkdf2.Key(h, string(ctx.key), salt, p2c, keyLen)
-		if err != nil {
-			return nil, err
-		}
+		key := pbkdf2.Key(ctx.key, salt, p2c, keyLen, h)
 
 		// use AES cipher with derived key
 		block, err := aes.NewCipher(key)
@@ -455,7 +440,7 @@ func (ctx *symmetricKeyCipher) decryptKey(headers rawHeader, recipient *recipien
 			return nil, err
 		}
 
-		cek, err := josecipher.KeyUnwrap(block, encryptedKey)
+		cek, err := josecipher.KeyUnwrap(block, recipient.encryptedKey)
 		if err != nil {
 			return nil, err
 		}

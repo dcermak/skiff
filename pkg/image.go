@@ -54,7 +54,12 @@ func layersFromImageDigest(store storage.Store, digest digest.Digest) ([]storage
 //
 // If the image is present in the local container store, then we also return the
 // layers of that image.
-func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri string) (types.Image, []storage.Layer, error) {
+//
+// The returned ImageCloser is owned by the caller and must be Close()d. Defer
+// the close immediately after the error check, before constructing any derived
+// resource (e.g. an OCIResolver) that has its own Close — Go's LIFO defer order
+// guarantees the derived closer fires first while the image is still live.
+func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri string) (types.ImageCloser, []storage.Layer, error) {
 	ref, err := alltransports.ParseImageName(uri)
 
 	// transport name missing or its using the containers-storage
@@ -85,7 +90,6 @@ func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri
 			if err != nil {
 				return nil, nil, err
 			}
-			defer imgCloser.Close()
 
 			layers, err := layersFromImageDigest(store, img.Digest())
 			if err == nil {
@@ -110,7 +114,6 @@ func ImageAndLayersFromURI(ctx context.Context, sysCtx *types.SystemContext, uri
 	if err != nil {
 		return nil, nil, err
 	}
-	defer img.Close()
 
 	return img, nil, nil
 }

@@ -24,19 +24,7 @@ type Int64Counter interface {
 	//
 	// Use the WithAttributeSet (or, if performance is not a concern,
 	// the WithAttributes) option to include measurement attributes.
-	//
-	// Implementations of this method need to be safe for a user to call
-	// concurrently.
 	Add(ctx context.Context, incr int64, options ...AddOption)
-
-	// Enabled reports whether the instrument will process measurements for the given context.
-	//
-	// This function can be used in places where measuring an instrument
-	// would result in computationally expensive operations.
-	//
-	// Implementations of this method need to be safe for a user to call
-	// concurrently.
-	Enabled(context.Context) bool
 }
 
 // Int64CounterConfig contains options for synchronous counter instruments that
@@ -51,9 +39,6 @@ type Int64CounterConfig struct {
 func NewInt64CounterConfig(opts ...Int64CounterOption) Int64CounterConfig {
 	var config Int64CounterConfig
 	for _, o := range opts {
-		if _, ok := o.(experimentalOption); ok {
-			continue
-		}
 		config = o.applyInt64Counter(config)
 	}
 	return config
@@ -92,19 +77,7 @@ type Int64UpDownCounter interface {
 	//
 	// Use the WithAttributeSet (or, if performance is not a concern,
 	// the WithAttributes) option to include measurement attributes.
-	//
-	// Implementations of this method need to be safe for a user to call
-	// concurrently.
 	Add(ctx context.Context, incr int64, options ...AddOption)
-
-	// Enabled reports whether the instrument will process measurements for the given context.
-	//
-	// This function can be used in places where measuring an instrument
-	// would result in computationally expensive operations.
-	//
-	// Implementations of this method need to be safe for a user to call
-	// concurrently.
-	Enabled(context.Context) bool
 }
 
 // Int64UpDownCounterConfig contains options for synchronous counter
@@ -119,9 +92,6 @@ type Int64UpDownCounterConfig struct {
 func NewInt64UpDownCounterConfig(opts ...Int64UpDownCounterOption) Int64UpDownCounterConfig {
 	var config Int64UpDownCounterConfig
 	for _, o := range opts {
-		if _, ok := o.(experimentalOption); ok {
-			continue
-		}
 		config = o.applyInt64UpDownCounter(config)
 	}
 	return config
@@ -160,19 +130,7 @@ type Int64Histogram interface {
 	//
 	// Use the WithAttributeSet (or, if performance is not a concern,
 	// the WithAttributes) option to include measurement attributes.
-	//
-	// Implementations of this method need to be safe for a user to call
-	// concurrently.
 	Record(ctx context.Context, incr int64, options ...RecordOption)
-
-	// Enabled reports whether the instrument will process measurements for the given context.
-	//
-	// This function can be used in places where measuring an instrument
-	// would result in computationally expensive operations.
-	//
-	// Implementations of this method need to be safe for a user to call
-	// concurrently.
-	Enabled(context.Context) bool
 }
 
 // Int64HistogramConfig contains options for synchronous histogram instruments
@@ -188,9 +146,6 @@ type Int64HistogramConfig struct {
 func NewInt64HistogramConfig(opts ...Int64HistogramOption) Int64HistogramConfig {
 	var config Int64HistogramConfig
 	for _, o := range opts {
-		if _, ok := o.(experimentalOption); ok {
-			continue
-		}
 		config = o.applyInt64Histogram(config)
 	}
 	return config
@@ -233,19 +188,7 @@ type Int64Gauge interface {
 	//
 	// Use the WithAttributeSet (or, if performance is not a concern,
 	// the WithAttributes) option to include measurement attributes.
-	//
-	// Implementations of this method need to be safe for a user to call
-	// concurrently.
 	Record(ctx context.Context, value int64, options ...RecordOption)
-
-	// Enabled reports whether the instrument will process measurements for the given context.
-	//
-	// This function can be used in places where measuring an instrument
-	// would result in computationally expensive operations.
-	//
-	// Implementations of this method need to be safe for a user to call
-	// concurrently.
-	Enabled(context.Context) bool
 }
 
 // Int64GaugeConfig contains options for synchronous gauge instruments that
@@ -260,9 +203,6 @@ type Int64GaugeConfig struct {
 func NewInt64GaugeConfig(opts ...Int64GaugeOption) Int64GaugeConfig {
 	var config Int64GaugeConfig
 	for _, o := range opts {
-		if _, ok := o.(experimentalOption); ok {
-			continue
-		}
 		config = o.applyInt64Gauge(config)
 	}
 	return config
