@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -231,7 +232,7 @@ func (c *layersCache) createCacheFileFromTOC(layerID string) (*layer, error) {
 			return nil, err
 		}
 	}
-	manifestReader, err := c.store.LayerBigData(layerID, bigDataKey)
+	manifestReader, err := c.store.LayerBigData(layerID, minimal.ManifestBigDataKey)
 	if err != nil {
 		// the cache file is not needed since there is no manifest file.
 		if errors.Is(err, os.ErrNotExist) {
@@ -410,9 +411,7 @@ func bloomFilterFromTags(tags [][]byte, digestLen int) *bloomFilter {
 }
 
 func writeCacheFileToWriter(writer io.Writer, bloomFilter *bloomFilter, tags [][]byte, tagLen, digestLen int, vdata, fnames bytes.Buffer, tagsBuffer *bytes.Buffer) error {
-	sort.Slice(tags, func(i, j int) bool {
-		return bytes.Compare(tags[i], tags[j]) == -1
-	})
+	slices.SortFunc(tags, bytes.Compare)
 	for _, t := range tags {
 		if _, err := tagsBuffer.Write(t); err != nil {
 			return err
@@ -715,7 +714,7 @@ func prepareCacheFile(manifest []byte, format graphdriver.DifferOutputFormat) ([
 			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("unknown format %q", format)
+		return nil, fmt.Errorf("unknown format %d", format)
 	}
 
 	var r []*fileMetadata
