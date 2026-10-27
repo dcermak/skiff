@@ -156,8 +156,13 @@ func doesMetacopy(d, mountOpts string) (bool, error) {
 		opts = fmt.Sprintf("%s,%s", opts, data)
 	}
 	if err := unix.Mount("overlay", filepath.Join(td, "merged"), "overlay", uintptr(flags), opts); err != nil {
-		if errors.Is(err, unix.EINVAL) {
-			logrus.Infof("overlay: metacopy option not supported on this kernel, checked using options %q", mountOpts)
+		// EINVAL means the kernel does not support the metacopy option.
+		// EACCES/EPERM mean the mount is not permitted in this environment
+		// (e.g. an unprivileged mount in a restricted user namespace); the
+		// probe cannot complete, which carries no information beyond
+		// "metacopy is not available here", so treat it as unsupported.
+		if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EACCES) || errors.Is(err, unix.EPERM) {
+			logrus.Infof("overlay: metacopy option not supported in this environment, checked using options %q, got: %v", mountOpts, err)
 			return false, nil
 		}
 		return false, fmt.Errorf("failed to mount overlay for metacopy check with %q options: %w", mountOpts, err)
@@ -240,11 +245,12 @@ func supportsIdmappedLowerLayers(home string) (bool, error) {
 	upperDir := filepath.Join(layerDir, "upper")
 	workDir := filepath.Join(layerDir, "work")
 
-	_ = idtools.MkdirAs(mergedDir, 0o700, 0, 0)
-	_ = idtools.MkdirAs(lowerDir, 0o700, 0, 0)
-	_ = idtools.MkdirAs(lowerMappedDir, 0o700, 0, 0)
-	_ = idtools.MkdirAs(upperDir, 0o700, 0, 0)
-	_ = idtools.MkdirAs(workDir, 0o700, 0, 0)
+	idPair := idtools.IDPair{UID: 0, GID: 0}
+	_ = idtools.MkdirAndChown(mergedDir, 0o700, idPair)
+	_ = idtools.MkdirAndChown(lowerDir, 0o700, idPair)
+	_ = idtools.MkdirAndChown(lowerMappedDir, 0o700, idPair)
+	_ = idtools.MkdirAndChown(upperDir, 0o700, idPair)
+	_ = idtools.MkdirAndChown(workDir, 0o700, idPair)
 
 	mapping := []idtools.IDMap{
 		{
@@ -296,11 +302,12 @@ func supportsDataOnlyLayers(home string) (bool, error) {
 	upperDir := filepath.Join(layerDir, "upper")
 	workDir := filepath.Join(layerDir, "work")
 
-	_ = idtools.MkdirAs(mergedDir, 0o700, 0, 0)
-	_ = idtools.MkdirAs(lowerDir, 0o700, 0, 0)
-	_ = idtools.MkdirAs(lowerDirDataOnly, 0o700, 0, 0)
-	_ = idtools.MkdirAs(upperDir, 0o700, 0, 0)
-	_ = idtools.MkdirAs(workDir, 0o700, 0, 0)
+	idPair := idtools.IDPair{UID: 0, GID: 0}
+	_ = idtools.MkdirAndChown(mergedDir, 0o700, idPair)
+	_ = idtools.MkdirAndChown(lowerDir, 0o700, idPair)
+	_ = idtools.MkdirAndChown(lowerDirDataOnly, 0o700, idPair)
+	_ = idtools.MkdirAndChown(upperDir, 0o700, idPair)
+	_ = idtools.MkdirAndChown(workDir, 0o700, idPair)
 
 	opts := fmt.Sprintf("lowerdir=%s::%s,upperdir=%s,workdir=%s,metacopy=on", lowerDir, lowerDirDataOnly, upperDir, workDir)
 	flags := uintptr(0)
