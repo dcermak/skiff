@@ -2,6 +2,7 @@ package chunked
 
 import (
 	archivetar "archive/tar"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -9,16 +10,17 @@ import (
 	"hash"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 
 	"github.com/containerd/stargz-snapshotter/estargz"
-	securejoin "github.com/cyphar/filepath-securejoin"
+	"github.com/cyphar/filepath-securejoin/pathrs-lite"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/klauspost/compress/zstd"
 	"github.com/klauspost/pgzip"
@@ -29,11 +31,13 @@ import (
 	tsStorage "github.com/vbatts/tar-split/tar/storage"
 	storage "go.podman.io/storage"
 	graphdriver "go.podman.io/storage/drivers"
+	"go.podman.io/storage/internal/createpath"
 	"go.podman.io/storage/pkg/archive"
 	"go.podman.io/storage/pkg/chunked/compressor"
 	"go.podman.io/storage/pkg/chunked/internal/minimal"
 	path "go.podman.io/storage/pkg/chunked/internal/path"
 	"go.podman.io/storage/pkg/chunked/toc"
+	"go.podman.io/storage/pkg/fileutils"
 	"go.podman.io/storage/pkg/fsverity"
 	"go.podman.io/storage/pkg/idtools"
 	"go.podman.io/storage/pkg/system"
@@ -43,8 +47,7 @@ import (
 const (
 	maxNumberMissingChunks  = 1024
 	autoMergePartsThreshold = 1024 // if the gap between two ranges is below this threshold, automatically merge them.
-	newFileFlags            = (unix.O_CREAT | unix.O_TRUNC | unix.O_EXCL | unix.O_WRONLY)
-	bigDataKey              = "zstd-chunked-manifest"
+	newFileFlags            = (unix.O_CREAT | unix.O_TRUNC | unix.O_EXCL | unix.O_WRONLY | unix.O_CLOEXEC)
 	chunkedData             = "zstd-chunked-data"
 	chunkedLayerDataKey     = "zstd-chunked-layer-data"
 	tocKey                  = "toc"
@@ -226,16 +229,14 @@ func NewDiffer(ctx context.Context, store storage.Store, blobDigest digest.Diges
 
 	differ, err := getProperDiffer(store, blobDigest, blobSize, annotations, iss, pullOptions)
 	if err != nil {
-		var fallbackErr ErrFallbackToOrdinaryLayerDownload
-		if !errors.As(err, &fallbackErr) {
+		if _, ok := errors.AsType[ErrFallbackToOrdinaryLayerDownload](err); !ok {
 			return nil, err
 		}
 		// If convert_images is enabled, always attempt to convert it instead of returning an error or falling back to a different method.
 		if !pullOptions.convertImages {
 			return nil, err
 		}
-		var canConvertErr errFallbackCanConvert
-		if !errors.As(err, &canConvertErr) {
+		if _, ok := errors.AsType[errFallbackCanConvert](err); !ok {
 			// We are supposed to use makeConvertFromRawDiffer, but that would not work.
 			// Fail, and make sure the error does _not_ match ErrFallbackToOrdinaryLayerDownload: use only the error text,
 			// discard all type information.
@@ -436,20 +437,28 @@ func makeCopyBuffer() []byte {
 // name is the path to the file to copy in source.
 // dirfd is an open file descriptor to the destination root directory.
 // useHardLinks defines whether the deduplication can be performed using hard links.
-func copyFileFromOtherLayer(file *fileMetadata, source string, name string, dirfd int, useHardLinks bool) (bool, *os.File, int64, error) {
+func copyFileFromOtherLayer(file *fileMetadata, source string, name string, dirfd int, useHardLinks bool, needsForkLock bool) (bool, *os.File, int64, error) {
 	srcDirfd, err := unix.Open(source, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			// Source layer was removed; skip reuse, fetch from remote instead.
+			return false, nil, 0, nil
+		}
 		return false, nil, 0, &fs.PathError{Op: "open", Path: source, Err: err}
 	}
 	defer unix.Close(srcDirfd)
 
 	srcFile, err := openFileUnderRoot(srcDirfd, name, unix.O_RDONLY|syscall.O_CLOEXEC, 0)
 	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			// Source layer is probably being removed and the file is already gone.
+			return false, nil, 0, nil
+		}
 		return false, nil, 0, err
 	}
 	defer srcFile.Close()
 
-	dstFile, written, err := copyFileContent(int(srcFile.Fd()), file, dirfd, 0, useHardLinks)
+	dstFile, written, err := copyFileContent(int(srcFile.Fd()), file, dirfd, 0, useHardLinks, needsForkLock)
 	if err != nil {
 		return false, nil, 0, fmt.Errorf("copy content to %q: %w", file.Name, err)
 	}
@@ -518,7 +527,7 @@ func canDedupFileWithHardLink(file *fileMetadata, fd int, s os.FileInfo) bool {
 // ostreeRepos is a list of OSTree repos.
 // dirfd is an open fd to the destination checkout.
 // useHardLinks defines whether the deduplication can be performed using hard links.
-func findFileInOSTreeRepos(file *fileMetadata, ostreeRepos []string, dirfd int, useHardLinks bool) (bool, *os.File, int64, error) {
+func findFileInOSTreeRepos(file *fileMetadata, ostreeRepos []string, dirfd int, useHardLinks bool, needsForkLock bool) (bool, *os.File, int64, error) {
 	digest, err := digest.Parse(file.Digest)
 	if err != nil {
 		logrus.Debugf("could not parse digest: %v", err)
@@ -551,7 +560,7 @@ func findFileInOSTreeRepos(file *fileMetadata, ostreeRepos []string, dirfd int, 
 			continue
 		}
 
-		dstFile, written, err := copyFileContent(fd, file, dirfd, 0, useHardLinks)
+		dstFile, written, err := copyFileContent(fd, file, dirfd, 0, useHardLinks, needsForkLock)
 		if err != nil {
 			logrus.Debugf("could not copyFileContent: %v", err)
 			return false, nil, 0, nil
@@ -560,7 +569,7 @@ func findFileInOSTreeRepos(file *fileMetadata, ostreeRepos []string, dirfd int, 
 	}
 	// If hard links deduplication was used and it has failed, try again without hard links.
 	if useHardLinks {
-		return findFileInOSTreeRepos(file, ostreeRepos, dirfd, false)
+		return findFileInOSTreeRepos(file, ostreeRepos, dirfd, false, needsForkLock)
 	}
 
 	return false, nil, 0, nil
@@ -571,12 +580,12 @@ func findFileInOSTreeRepos(file *fileMetadata, ostreeRepos []string, dirfd int, 
 // file is the file to look for.
 // dirfd is an open file descriptor to the checkout root directory.
 // useHardLinks defines whether the deduplication can be performed using hard links.
-func findFileInOtherLayers(cache *layersCache, file *fileMetadata, dirfd int, useHardLinks bool) (bool, *os.File, int64, error) {
+func findFileInOtherLayers(cache *layersCache, file *fileMetadata, dirfd int, useHardLinks bool, needsForkLock bool) (bool, *os.File, int64, error) {
 	target, name, err := cache.findFileInOtherLayers(file, useHardLinks)
 	if err != nil || name == "" {
 		return false, nil, 0, err
 	}
-	return copyFileFromOtherLayer(file, target, name, dirfd, useHardLinks)
+	return copyFileFromOtherLayer(file, target, name, dirfd, useHardLinks, needsForkLock)
 }
 
 func maybeDoIDRemap(manifest []fileMetadata, options *archive.TarOptions) error {
@@ -606,11 +615,7 @@ func maybeDoIDRemap(manifest []fileMetadata, options *archive.TarOptions) error 
 }
 
 func mapToSlice(inputMap map[uint32]struct{}) []uint32 {
-	var out []uint32
-	for value := range inputMap {
-		out = append(out, value)
-	}
-	return out
+	return slices.Collect(maps.Keys(inputMap))
 }
 
 func collectIDs(entries []fileMetadata) ([]uint32, []uint32) {
@@ -621,6 +626,40 @@ func collectIDs(entries []fileMetadata) ([]uint32, []uint32) {
 		gids[uint32(entry.GID)] = struct{}{}
 	}
 	return mapToSlice(uids), mapToSlice(gids)
+}
+
+func isReflinkNotSupported(err error) bool {
+	return errors.Is(err, unix.EOPNOTSUPP) ||
+		errors.Is(err, unix.ENOSYS) ||
+		errors.Is(err, unix.EXDEV) ||
+		errors.Is(err, unix.EINVAL)
+}
+
+func createReflink(srcRoot, srcPath, dstDir string) (string, error) {
+	parentDirfd, err := unix.Open(srcRoot, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return "", err
+	}
+	defer unix.Close(parentDirfd)
+
+	srcFile, err := openFileUnderRoot(parentDirfd, srcPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return "", err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.CreateTemp(dstDir, "")
+	if err != nil {
+		return "", err
+	}
+	defer dstFile.Close()
+
+	if err := fileutils.Reflink(srcFile, dstFile); err != nil {
+		os.Remove(dstFile.Name())
+		return "", err
+	}
+
+	return filepath.Base(dstFile.Name()), nil
 }
 
 type originFile struct {
@@ -702,7 +741,7 @@ func (c *chunkedDiffer) prepareCompressedStreamToFile(partCompression compressed
 	case partCompression == fileTypeNoCompression:
 		return fileTypeNoCompression, nil
 	default:
-		return partCompression, fmt.Errorf("unknown file type %q", c.fileType)
+		return partCompression, fmt.Errorf("unknown file type %d", c.fileType)
 	}
 	return partCompression, nil
 }
@@ -753,7 +792,7 @@ func (c *chunkedDiffer) appendCompressedStreamToFile(compression compressedFileT
 			}
 		}
 	default:
-		return fmt.Errorf("unknown file type %q", c.fileType)
+		return fmt.Errorf("unknown file type %d", c.fileType)
 	}
 	return nil
 }
@@ -773,8 +812,16 @@ type destinationFile struct {
 }
 
 func openDestinationFile(dirfd int, metadata *fileMetadata, options *archive.TarOptions, skipValidation bool, recordFsVerity recordFsVerityFunc) (*destinationFile, error) {
+	// Hold ForkLock to prevent concurrent fork(2) from duplicating
+	// the writable fd, which causes ETXTBSY from FS_IOC_ENABLE_VERITY.
+	if recordFsVerity != nil {
+		syscall.ForkLock.RLock()
+	}
 	file, err := openFileUnderRoot(dirfd, metadata.Name, newFileFlags, 0)
 	if err != nil {
+		if recordFsVerity != nil {
+			syscall.ForkLock.RUnlock()
+		}
 		return nil, err
 	}
 
@@ -803,29 +850,18 @@ func openDestinationFile(dirfd int, metadata *fileMetadata, options *archive.Tar
 	}, nil
 }
 
-func (d *destinationFile) Close() (Err error) {
-	defer func() {
-		var roFile *os.File
-		var err error
-
-		if d.recordFsVerity != nil {
-			roFile, err = reopenFileReadOnly(d.file)
-			if err == nil {
-				defer roFile.Close()
-			} else if Err == nil {
-				Err = err
-			}
-		}
-
-		err = d.file.Close()
-		if Err == nil {
-			Err = err
-		}
-
-		if Err == nil && roFile != nil {
-			Err = d.recordFsVerity(d.metadata.Name, roFile)
-		}
-	}()
+func (d *destinationFile) Close() error {
+	if d.recordFsVerity != nil {
+		defer syscall.ForkLock.RUnlock()
+	}
+	// Reopen read-only while the writable fd is still valid, then
+	// close the writable fd to release ForkLock.
+	roFile, err := reopenFileReadOnly(d.file)
+	d.file.Close()
+	if err != nil {
+		return err
+	}
+	defer roFile.Close()
 
 	if !d.skipValidation {
 		manifestChecksum, err := digest.Parse(d.metadata.Digest)
@@ -842,14 +878,77 @@ func (d *destinationFile) Close() (Err error) {
 		mode = *d.options.ForceMask
 	}
 
-	return setFileAttrs(d.dirfd, d.file, mode, d.metadata, d.options, false)
+	if err := setFileAttrs(d.dirfd, roFile, mode, d.metadata, d.options, false); err != nil {
+		return err
+	}
+
+	if d.recordFsVerity != nil {
+		return d.recordFsVerity(d.metadata.Name, roFile)
+	}
+	return nil
 }
 
-func closeDestinationFiles(files chan *destinationFile, errors chan error) {
-	for f := range files {
-		errors <- f.Close()
+const maxPendingDestinationFiles = 3
+
+// destinationFileCloserQueue closes destination files asynchronously.
+//
+// The closing goroutine must never block while a queued destination file is
+// still open: an open writable file holds syscall.ForkLock.RLock(), and a
+// concurrent composefs generation waiting for syscall.ForkLock.Lock() would
+// then deadlock with the workers that can no longer acquire the read lock.
+// Close results are therefore accumulated in memory instead of being handed
+// back over a channel the producer might not be draining.
+type destinationFileCloserQueue struct {
+	files chan io.Closer
+	done  sync.WaitGroup
+
+	mutex sync.Mutex
+	err   error
+}
+
+func newDestinationFileCloser() *destinationFileCloserQueue {
+	c := &destinationFileCloserQueue{
+		files: make(chan io.Closer, maxPendingDestinationFiles),
 	}
-	close(errors)
+	c.done.Add(1)
+	go c.closeDestinationFiles()
+	return c
+}
+
+func (c *destinationFileCloserQueue) closeDestinationFiles() {
+	defer c.done.Done()
+	for f := range c.files {
+		if err := f.Close(); err != nil {
+			logrus.Errorf("Could not close destination file: %v", err)
+			c.mutex.Lock()
+			if c.err == nil {
+				c.err = err
+			}
+			c.mutex.Unlock()
+		}
+	}
+}
+
+// Err returns the first error reported by an asynchronous close so far, if any.
+func (c *destinationFileCloserQueue) Err() error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.err
+}
+
+// Add hands f over to the closing goroutine; f must not be used afterwards.
+// It returns the first error reported by an already completed close, if any.
+func (c *destinationFileCloserQueue) Add(f io.Closer) error {
+	c.files <- f
+	return c.Err()
+}
+
+// Wait closes the queue, waits for the pending files to be closed and returns
+// the first error encountered.  No file may be added afterwards.
+func (c *destinationFileCloserQueue) Wait() error {
+	close(c.files)
+	c.done.Wait()
+	return c.Err()
 }
 
 func (c *chunkedDiffer) recordFsVerity(path string, roFile *os.File) error {
@@ -860,13 +959,17 @@ func (c *chunkedDiffer) recordFsVerity(path string, roFile *os.File) error {
 	// enabled on the file.
 	err := fsverity.EnableVerity(path, int(roFile.Fd()))
 	if err != nil {
-		if c.useFsVerity == graphdriver.DifferFsVerityRequired {
+		switch {
+		case c.useFsVerity == graphdriver.DifferFsVerityRequired:
 			return err
-		}
 
 		// If it is not required, ignore the error if the filesystem does not support it.
-		if errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.ENOTTY) {
+		case c.useFsVerity == graphdriver.DifferFsVerityIfAvailable &&
+			(errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.ENOTTY)):
 			return nil
+
+		default:
+			return err
 		}
 	}
 	verity, err := fsverity.MeasureVerity(path, int(roFile.Fd()))
@@ -881,19 +984,65 @@ func (c *chunkedDiffer) recordFsVerity(path string, roFile *os.File) error {
 	return nil
 }
 
+// drainBlobAtChannels consumes and closes everything left in the channels
+// returned by ImageSourceSeekable.GetBlobAt.  A caller must consume every item
+// from both of them: the producer blocks until the last one is handed over, so
+// abandoning the channels leaks its goroutine as well as the streams still
+// queued in it, and with them the response bodies they hold.  Both channels are
+// closed once the producer is done.
+//
+// It returns the first error the producer reported.  The producer sends its
+// errors after the streams, so an invalid response — more parts than chunks
+// requested, or a body that ends early — is only reported here, once the main
+// loop has already consumed everything it asked for.
+func drainBlobAtChannels(streams chan io.ReadCloser, errs chan error) error {
+	var retErr error
+	for streams != nil || errs != nil {
+		select {
+		case p, ok := <-streams:
+			if !ok {
+				streams = nil
+				continue
+			}
+			if p != nil {
+				p.Close()
+			}
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+				continue
+			}
+			if err != nil && retErr == nil {
+				retErr = err
+			}
+		}
+	}
+	return retErr
+}
+
 func (c *chunkedDiffer) storeMissingFiles(streams chan io.ReadCloser, errs chan error, dirfd int, missingParts []missingPart, options *archive.TarOptions) (Err error) {
 	var destFile *destinationFile
 
-	filesToClose := make(chan *destinationFile, 3)
-	closeFilesErrors := make(chan error, 2)
-
-	go closeDestinationFiles(filesToClose, closeFilesErrors)
+	// Registered first so that it runs last: no destination file may still
+	// hold syscall.ForkLock.RLock() while the drain waits for the server.
 	defer func() {
-		close(filesToClose)
-		for e := range closeFilesErrors {
-			if e != nil && Err == nil {
+		if e := drainBlobAtChannels(streams, errs); e != nil && Err == nil {
+			Err = e
+		}
+	}()
+
+	filesToClose := newDestinationFileCloser()
+	// Close destFile here as well: the error paths below can return with a
+	// destination file still open, and leaking it would also leak the
+	// syscall.ForkLock.RLock() it holds, blocking every later fork.
+	defer func() {
+		if destFile != nil {
+			if e := destFile.Close(); e != nil && Err == nil {
 				Err = e
 			}
+		}
+		if e := filesToClose.Wait(); e != nil && Err == nil {
+			Err = e
 		}
 	}()
 
@@ -967,19 +1116,12 @@ func (c *chunkedDiffer) storeMissingFiles(streams chan io.ReadCloser, errs chan 
 			if destFile == nil || destFile.metadata.Name != mf.File.Name {
 				var err error
 				if destFile != nil {
-				cleanup:
-					for {
-						select {
-						case err = <-closeFilesErrors:
-							if err != nil {
-								Err = err
-								goto exit
-							}
-						default:
-							break cleanup
-						}
+					err = filesToClose.Add(destFile)
+					destFile = nil
+					if err != nil {
+						Err = err
+						goto exit
 					}
-					filesToClose <- destFile
 				}
 				recordFsVerity := c.recordFsVerity
 				if c.useFsVerity == graphdriver.DifferFsVerityDisabled {
@@ -1006,17 +1148,13 @@ func (c *chunkedDiffer) storeMissingFiles(streams chan io.ReadCloser, errs chan 
 	exit:
 		if part != nil {
 			part.Close()
-			if Err != nil {
-				break
-			}
+		}
+		if Err != nil {
+			break
 		}
 	}
 
-	if destFile != nil {
-		return destFile.Close()
-	}
-
-	return nil
+	return Err
 }
 
 func mergeMissingChunks(missingParts []missingPart, target int) []missingPart {
@@ -1071,8 +1209,8 @@ func mergeMissingChunks(missingParts []missingPart, target int) []missingPart {
 		}
 		lastOffset = i
 	}
-	sort.Slice(requestGaps, func(i, j int) bool {
-		return requestGaps[i].cost < requestGaps[j].cost
+	slices.SortFunc(requestGaps, func(a, b gap) int {
+		return cmp.Compare(a.cost, b.cost)
 	})
 	toMergeMap := make([]bool, len(missingParts))
 	remainingToMerge := numberSourceChunks - target
@@ -1174,32 +1312,23 @@ func reopenFileReadOnly(f *os.File) (*os.File, error) {
 }
 
 func (c *chunkedDiffer) findAndCopyFile(dirfd int, r *fileMetadata, copyOptions *findAndCopyFileOptions, mode os.FileMode) (bool, error) {
-	finalizeFile := func(dstFile *os.File) error {
-		if dstFile == nil {
-			return nil
-		}
-		err := setFileAttrs(dirfd, dstFile, mode, r, copyOptions.options, false)
-		if err != nil {
-			dstFile.Close()
-			return err
-		}
-		var roFile *os.File
-		if c.useFsVerity != graphdriver.DifferFsVerityDisabled {
-			roFile, err = reopenFileReadOnly(dstFile)
-		}
-		dstFile.Close()
-		if err != nil {
-			return err
-		}
+	finalizeFile := func(roFile *os.File) error {
 		if roFile == nil {
 			return nil
 		}
-
 		defer roFile.Close()
+
+		if err := setFileAttrs(dirfd, roFile, mode, r, copyOptions.options, false); err != nil {
+			return err
+		}
+		if c.useFsVerity == graphdriver.DifferFsVerityDisabled {
+			return nil
+		}
 		return c.recordFsVerity(r.Name, roFile)
 	}
 
-	found, dstFile, _, err := findFileInOtherLayers(c.layersCache, r, dirfd, copyOptions.useHardLinks)
+	needsForkLock := c.useFsVerity != graphdriver.DifferFsVerityDisabled
+	found, dstFile, _, err := findFileInOtherLayers(c.layersCache, r, dirfd, copyOptions.useHardLinks, needsForkLock)
 	if err != nil {
 		return false, err
 	}
@@ -1210,7 +1339,7 @@ func (c *chunkedDiffer) findAndCopyFile(dirfd int, r *fileMetadata, copyOptions 
 		return true, nil
 	}
 
-	found, dstFile, _, err = findFileInOSTreeRepos(r, copyOptions.ostreeRepos, dirfd, copyOptions.useHardLinks)
+	found, dstFile, _, err = findFileInOSTreeRepos(r, copyOptions.ostreeRepos, dirfd, copyOptions.useHardLinks, needsForkLock)
 	if err != nil {
 		return false, err
 	}
@@ -1511,8 +1640,8 @@ func (c *chunkedDiffer) ApplyDiff(dest string, options *archive.TarOptions, diff
 		Differ:   c,
 		TarSplit: c.tarSplit,
 		BigData: map[string][]byte{
-			bigDataKey:          c.manifest,
-			chunkedLayerDataKey: lcdBigData,
+			minimal.ManifestBigDataKey: c.manifest,
+			chunkedLayerDataKey:        lcdBigData,
 		},
 		Artifacts: map[string]any{
 			tocKey: toc,
@@ -1551,7 +1680,7 @@ func (c *chunkedDiffer) ApplyDiff(dest string, options *archive.TarOptions, diff
 		}
 	}
 
-	dirfd, err := unix.Open(dest, unix.O_RDONLY|unix.O_PATH|unix.O_CLOEXEC, 0)
+	dirfd, err := unix.Open(dest, unix.O_PATH|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return output, &fs.PathError{Op: "open", Path: dest, Err: err}
 	}
@@ -1615,18 +1744,15 @@ func (c *chunkedDiffer) ApplyDiff(dest string, options *archive.TarOptions, diff
 	}()
 
 	for range copyGoRoutines {
-		wg.Add(1)
 		jobs := copyFileJobs
-
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for job := range jobs {
 				found, err := c.findAndCopyFile(dirfd, job.metadata, &copyOptions, job.mode)
 				job.err = err
 				job.found = found
 				copyResults[job.njob] = job
 			}
-		}()
+		})
 	}
 
 	filesToWaitFor := 0
@@ -1667,10 +1793,10 @@ func (c *chunkedDiffer) ApplyDiff(dest string, options *archive.TarOptions, diff
 			}
 		}
 
-		r.Name = path.CleanAbsPath(r.Name)
+		r.Name = createpath.CleanAbsPath(r.Name)
 		// do not modify the value of symlinks
 		if r.Linkname != "" && t != tar.TypeSymlink {
-			r.Linkname = path.CleanAbsPath(r.Linkname)
+			r.Linkname = createpath.CleanAbsPath(r.Linkname)
 		}
 
 		if whiteoutConverter != nil {
@@ -1774,6 +1900,29 @@ func (c *chunkedDiffer) ApplyDiff(dest string, options *archive.TarOptions, diff
 
 	wg.Wait()
 
+	// Reflink chunk dedup: when findChunkInOtherLayers locates a chunk
+	// in an existing layer, we cannot use that path directly because
+	// the source layer may be deleted before storeMissingFiles reads
+	// from it.  Instead we reflink (CoW clone) the source file into a
+	// scratch directory so the copy is immune to concurrent deletion.
+	// If the filesystem does not support reflinks we skip chunk dedup
+	// entirely and fetch everything from the network.
+	var chunkRefsDir string
+	if differOpts != nil && differOpts.StagingDirectory != "" {
+		d, err := os.MkdirTemp(differOpts.StagingDirectory, "chunk-refs-")
+		if err != nil {
+			return output, fmt.Errorf("create chunk-refs directory: %w", err)
+		}
+		chunkRefsDir = d
+		defer os.RemoveAll(chunkRefsDir)
+	}
+	// reflinkMap caches reflinks: (source root, source path) → reflinked
+	// filename in chunkRefsDir.  Multiple chunks at different offsets
+	// within the same source file share one reflink.
+	type reflinkKey struct{ root, path string }
+	reflinkMap := make(map[reflinkKey]string)
+	reflinkSupported := chunkRefsDir != ""
+
 	for _, res := range copyResults[:filesToWaitFor] {
 		r := &mergedEntries[res.index]
 
@@ -1817,15 +1966,39 @@ func (c *chunkedDiffer) ApplyDiff(dest string, options *archive.TarOptions, diff
 
 			switch chunk.ChunkType {
 			case minimal.ChunkTypeData:
+				if !reflinkSupported {
+					break
+				}
 				root, path, offset, err := c.layersCache.findChunkInOtherLayers(chunk)
 				if err != nil {
 					return output, err
 				}
-				if offset >= 0 && validateChunkChecksum(chunk, root, path, offset, c.copyBuffer) {
+				if offset < 0 {
+					break
+				}
+				key := reflinkKey{root: root, path: path}
+				refName, ok := reflinkMap[key]
+				if !ok {
+					refName, err = createReflink(root, path, chunkRefsDir)
+					if err != nil {
+						if isReflinkNotSupported(err) {
+							reflinkSupported = false
+							break
+						}
+						// ENOENT is expected: the source layer can
+						// be deleted concurrently.
+						if errors.Is(err, unix.ENOENT) {
+							break
+						}
+						return output, fmt.Errorf("create reflink for %q: %w", path, err)
+					}
+					reflinkMap[key] = refName
+				}
+				if validateChunkChecksum(chunk, chunkRefsDir, refName, offset, c.copyBuffer) {
 					missingPartsSize -= size
 					mp.OriginFile = &originFile{
-						Root:   root,
-						Path:   path,
+						Root:   chunkRefsDir,
+						Path:   refName,
 						Offset: offset,
 					}
 				}
@@ -1966,7 +2139,7 @@ func (c *chunkedDiffer) mergeTocEntries(fileType compressedFileType, entries []m
 	}
 	// stargz/estargz doesn't store EndOffset so let's calculate it here
 	lastOffset := c.tocOffset
-	for i := len(mergedEntries) - 1; i >= 0; i-- {
+	for i := range slices.Backward(mergedEntries) {
 		if mergedEntries[i].EndOffset == 0 {
 			mergedEntries[i].EndOffset = lastOffset
 		}
@@ -1975,7 +2148,7 @@ func (c *chunkedDiffer) mergeTocEntries(fileType compressedFileType, entries []m
 		}
 
 		lastChunkOffset := mergedEntries[i].EndOffset
-		for j := len(mergedEntries[i].chunks) - 1; j >= 0; j-- {
+		for j := range slices.Backward(mergedEntries[i].chunks) {
 			mergedEntries[i].chunks[j].EndOffset = lastChunkOffset
 			mergedEntries[i].chunks[j].Size = mergedEntries[i].chunks[j].EndOffset - mergedEntries[i].chunks[j].Offset
 			lastChunkOffset = mergedEntries[i].chunks[j].Offset
@@ -2040,10 +2213,10 @@ func (fg *stagedFileGetter) Get(filename string) (io.ReadCloser, error) {
 		}
 		filename = path
 	}
-	pathFD, err := securejoin.OpenatInRoot(fg.rootDir, filename)
+	pathFD, err := pathrs.OpenatInRoot(fg.rootDir, filename)
 	if err != nil {
 		return nil, err
 	}
 	defer pathFD.Close()
-	return securejoin.Reopen(pathFD, unix.O_RDONLY)
+	return pathrs.Reopen(pathFD, unix.O_RDONLY)
 }
