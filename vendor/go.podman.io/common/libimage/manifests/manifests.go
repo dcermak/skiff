@@ -114,6 +114,8 @@ type PushOptions struct {
 	MaxRetries *uint
 	// RetryDelay used for the exponential back off of MaxRetries.
 	RetryDelay *time.Duration
+	// DestinationTimestamp, if set, overwrites the timestamp entries on any tar entries
+	DestinationTimestamp *time.Time
 }
 
 // Create creates a new list containing information about the specified image,
@@ -449,6 +451,7 @@ func (l *list) Push(ctx context.Context, dest types.ImageReference, options Push
 		ForceManifestMIMEType:            singleImageManifestType,
 		EnsureCompressionVariantsExist:   compressionVariants,
 		ForceCompressionFormat:           options.ForceCompressionFormat,
+		DestinationTimestamp:             options.DestinationTimestamp,
 	}
 
 	retryOptions := retry.Options{}
@@ -957,7 +960,7 @@ func (l *list) Remove(instanceDigest digest.Digest) error {
 // then use that list's SaveToImage() method to save a modified version of the
 // list to that image record use this lock to avoid accidentally wiping out
 // changes that another process is also attempting to make.
-func LockerForImage(store storage.Store, image string) (lockfile.Locker, error) { // nolint:staticcheck
+func LockerForImage(store storage.Store, image string) (lockfile.Locker, error) { //nolint:staticcheck // suppress "lockfile.Locker is deprecated".
 	img, err := store.Image(image)
 	if err != nil {
 		return nil, fmt.Errorf("locating image %q for locating lock: %w", image, err)
