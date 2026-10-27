@@ -110,12 +110,17 @@ func (r *Runtime) Load(ctx context.Context, path string, options *LoadOptions) (
 			return loadedImages, err
 		}
 		logrus.Debugf("Error loading %s (%s): %v", path, transportName, err)
+
+		if errors.Is(err, errNoSpace) {
+			// %.0w makes err visible to error.Unwrap() without including any text
+			return nil, fmt.Errorf("no space left on device%.0w", err)
+		}
+
 		loadErrors = append(loadErrors, fmt.Errorf("%s: %v", transportName, err))
 	}
 
 	// Give a decent error message if nothing above worked.
-	// we want the colon here for the multiline error
-	//nolint:revive,staticcheck
+	//nolint:staticcheck // We want the colon here for the multiline error.
 	loadError := errors.New("payload does not match any of the supported image formats:")
 	for _, err := range loadErrors {
 		loadError = fmt.Errorf("%v\n * %v", loadError, err)

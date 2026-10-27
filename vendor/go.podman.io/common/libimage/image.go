@@ -97,12 +97,12 @@ func (i *Image) isCorrupted(ctx context.Context, name string) error {
 		return err
 	}
 
-	img, err := ref.NewImage(ctx, nil)
+	img, err := ref.NewImage(ctx, &i.runtime.systemContext)
 	if err != nil {
 		if name == "" {
 			name = i.ID()[:12]
 		}
-		return fmt.Errorf("Image %s exists in local storage but may be corrupted (remove the image to resolve the issue): %v", name, err)
+		return fmt.Errorf("Image %s exists in local storage but may be corrupted (remove the image to resolve the issue): %w", name, err)
 	}
 	return img.Close()
 }

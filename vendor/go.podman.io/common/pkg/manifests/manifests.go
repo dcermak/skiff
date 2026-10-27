@@ -18,6 +18,8 @@ import (
 
 // List is a generic interface for manipulating a manifest list or an image
 // index.
+//
+// Note: the instanceDigest values used for lookups/removals must exactly match the digests in the manifest list, in particular use the algorithm used there.
 type List interface {
 	AddInstance(manifestDigest digest.Digest, manifestSize int64, manifestType, os, architecture, osVersion string, osFeatures []string, variant string, features []string, annotations []string) error
 	Remove(instanceDigest digest.Digest) error
@@ -93,7 +95,7 @@ func sliceToMap(s []string) map[string]string {
 
 // AddInstance adds an entry for the specified manifest digest, with assorted
 // additional information specified in parameters, to the list or index.
-func (l *list) AddInstance(manifestDigest digest.Digest, manifestSize int64, manifestType, osName, architecture, osVersion string, osFeatures []string, variant string, features, annotations []string) error { // nolint:revive
+func (l *list) AddInstance(manifestDigest digest.Digest, manifestSize int64, manifestType, osName, architecture, osVersion string, osFeatures []string, variant string, features, annotations []string) error {
 	if err := l.Remove(manifestDigest); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

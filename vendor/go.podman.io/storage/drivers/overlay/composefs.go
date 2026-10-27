@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/sirupsen/logrus"
 	"go.podman.io/storage/pkg/chunked/dump"
@@ -58,9 +59,33 @@ func generateComposeFsBlob(verityDigests map[string]string, toc any, composefsDi
 		return fmt.Errorf("failed to find mkcomposefs: %w", err)
 	}
 
-	outFile, err := os.OpenFile(destFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	errBuf := &bytes.Buffer{}
+	outBuf := &bytes.Buffer{}
+	cmd := exec.Command(writerJSON, "--from-file", "-", "-")
+	cmd.Stderr = errBuf
+	cmd.Stdin = dumpReader
+	cmd.Stdout = outBuf
+	if err := cmd.Run(); err != nil {
+		rErr := fmt.Errorf("failed to convert json to erofs: %w", err)
+		if _, ok := errors.AsType[*exec.ExitError](err); ok {
+			return fmt.Errorf("%w: %s", rErr, strings.TrimSpace(errBuf.String()))
+		}
+		return rErr
+	}
+
+	// Hold ForkLock to prevent concurrent fork(2) from duplicating
+	// the writable fd, which causes ETXTBSY from FS_IOC_ENABLE_VERITY.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+
+	outFile, err := os.OpenFile(destFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_CLOEXEC, 0o644)
 	if err != nil {
 		return err
+	}
+
+	if _, err := outFile.Write(outBuf.Bytes()); err != nil {
+		outFile.Close()
+		return fmt.Errorf("failed to write composefs blob %s: %w", destFile, err)
 	}
 
 	roFile, err := os.Open(fmt.Sprintf("/proc/self/fd/%d", outFile.Fd()))
@@ -68,29 +93,9 @@ func generateComposeFsBlob(verityDigests map[string]string, toc any, composefsDi
 		outFile.Close()
 		return fmt.Errorf("failed to reopen %s as read-only: %w", destFile, err)
 	}
+	defer roFile.Close()
 
-	err = func() error {
-		// a scope to close outFile before setting fsverity on the read-only fd.
-		defer outFile.Close()
-
-		errBuf := &bytes.Buffer{}
-		cmd := exec.Command(writerJSON, "--from-file", "-", "-")
-		cmd.Stderr = errBuf
-		cmd.Stdin = dumpReader
-		cmd.Stdout = outFile
-		if err := cmd.Run(); err != nil {
-			rErr := fmt.Errorf("failed to convert json to erofs: %w", err)
-			exitErr := &exec.ExitError{}
-			if errors.As(err, &exitErr) {
-				return fmt.Errorf("%w: %s", rErr, strings.TrimSpace(errBuf.String()))
-			}
-			return rErr
-		}
-		return nil
-	}()
-	if err != nil {
-		return err
-	}
+	outFile.Close()
 
 	if err := fsverity.EnableVerity("manifest file", int(roFile.Fd())); err != nil && !errors.Is(err, unix.ENOTSUP) && !errors.Is(err, unix.ENOTTY) {
 		logrus.Warningf("%s", err)
@@ -152,7 +157,7 @@ func openBlobFile(blobFile string, hasACL, useLoopDevice bool) (int, error) {
 		blobFile = loop.Name()
 	}
 
-	fsfd, err := unix.Fsopen("erofs", 0)
+	fsfd, err := unix.Fsopen("erofs", unix.FSOPEN_CLOEXEC)
 	if err != nil {
 		return -1, fmt.Errorf("failed to open erofs filesystem: %w", err)
 	}
@@ -180,7 +185,7 @@ func openBlobFile(blobFile string, hasACL, useLoopDevice bool) (int, error) {
 		return -1, fmt.Errorf("failed to create erofs filesystem: %w", err)
 	}
 
-	mfd, err := unix.Fsmount(fsfd, 0, unix.MOUNT_ATTR_RDONLY)
+	mfd, err := unix.Fsmount(fsfd, unix.FSMOUNT_CLOEXEC, unix.MOUNT_ATTR_RDONLY)
 	if err != nil {
 		buffer := make([]byte, 4096)
 		if n, _ := unix.Read(fsfd, buffer); n > 0 {

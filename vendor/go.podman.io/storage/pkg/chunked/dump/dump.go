@@ -9,9 +9,11 @@ import (
 	"io"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	"go.podman.io/storage/internal/createpath"
 	"go.podman.io/storage/pkg/chunked/internal/minimal"
 	storagePath "go.podman.io/storage/pkg/chunked/internal/path"
 	"golang.org/x/sys/unix"
@@ -42,7 +44,7 @@ func escaped(val []byte, escape int) string {
 		return c > 32 && c < 127
 	}
 
-	var result string
+	var result strings.Builder
 	for _, c := range val {
 		hexEscape := false
 		var special string
@@ -67,14 +69,14 @@ func escaped(val []byte, escape int) string {
 		}
 
 		if special != "" {
-			result += special
+			result.WriteString(special)
 		} else if hexEscape {
-			result += fmt.Sprintf("\\x%.2x", c)
+			fmt.Fprintf(&result, "\\x%.2x", c)
 		} else {
-			result += string(c)
+			result.WriteString(string(c))
 		}
 	}
-	return result
+	return result.String()
 }
 
 func escapedOptional(val []byte, escape int) string {
@@ -105,7 +107,7 @@ func getStMode(mode uint32, typ string) (uint32, error) {
 }
 
 func dumpNode(out io.Writer, added map[string]*minimal.FileMetadata, links map[string]int, verityDigests map[string]string, entry *minimal.FileMetadata) error {
-	path := storagePath.CleanAbsPath(entry.Name)
+	path := createpath.CleanAbsPath(entry.Name)
 
 	parent := filepath.Dir(path)
 	if _, found := added[parent]; !found && path != "/" {
@@ -163,7 +165,7 @@ func dumpNode(out io.Writer, added map[string]*minimal.FileMetadata, links map[s
 		if entry.Type == minimal.TypeSymlink {
 			payload = entry.Linkname
 		} else {
-			payload = storagePath.CleanAbsPath(entry.Linkname)
+			payload = createpath.CleanAbsPath(entry.Linkname)
 		}
 	} else if entry.Digest != "" {
 		d, err := digest.Parse(entry.Digest)
@@ -190,7 +192,10 @@ func dumpNode(out io.Writer, added map[string]*minimal.FileMetadata, links map[s
 	if _, err := fmt.Fprint(out, " "); err != nil {
 		return err
 	}
-	digest := verityDigests[payload]
+	digest := ""
+	if entry.Type == minimal.TypeReg {
+		digest = verityDigests["/"+payload]
+	}
 	if _, err := fmt.Fprint(out, escapedOptional([]byte(digest), ESCAPE_LONE_DASH)); err != nil {
 		return err
 	}
